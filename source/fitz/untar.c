@@ -66,7 +66,7 @@ static void ensure_tar_entries(fz_context *ctx, fz_tar_archive *tar)
 		offset = fz_tell(ctx, file);
 		n = fz_read(ctx, file, (unsigned char *) name, nelem(name));
 		if (n < nelem(name))
-			fz_throw(ctx, FZ_ERROR_GENERIC, "premature end of data in zip entry name");
+			fz_throw(ctx, FZ_ERROR_GENERIC, "premature end of data in tar entry name");
 		name[nelem(name) - 1] = '\0';
 
 		if (strlen(name) == 0)
@@ -75,7 +75,7 @@ static void ensure_tar_entries(fz_context *ctx, fz_tar_archive *tar)
 		fz_seek(ctx, file, 24, 1);
 		n = fz_read(ctx, file, (unsigned char *) octsize, nelem(octsize));
 		if (n < nelem(octsize))
-			fz_throw(ctx, FZ_ERROR_GENERIC, "premature end of data in zip entry size");
+			fz_throw(ctx, FZ_ERROR_GENERIC, "premature end of data in tar entry size");
 		size = otoi(octsize);
 
 		fz_seek(ctx, file, 20, 1);
@@ -85,7 +85,7 @@ static void ensure_tar_entries(fz_context *ctx, fz_tar_archive *tar)
 		blocks = (size + 511) / 512;
 		fz_seek(ctx, file, blocks * 512, 1);
 
-		if (typeflag != '0')
+		if (typeflag != '0' && typeflag != '\0')
 			continue;
 
 		tar->entries = fz_resize_array(ctx, tar->entries, tar->count + 1, sizeof *tar->entries);
@@ -118,7 +118,7 @@ static fz_stream *open_tar_entry(fz_context *ctx, fz_archive *arch, const char *
 		fz_throw(ctx, FZ_ERROR_GENERIC, "cannot find named tar archive entry");
 
 	fz_seek(ctx, file, ent->offset + 512, 0);
-	return fz_open_null(ctx, file, ent->size, fz_tell(ctx, file));
+	return fz_open_null_filter(ctx, file, ent->size, fz_tell(ctx, file));
 }
 
 static fz_buffer *read_tar_entry(fz_context *ctx, fz_archive *arch, const char *name)
@@ -174,18 +174,24 @@ static int count_tar_entries(fz_context *ctx, fz_archive *arch)
 int
 fz_is_tar_archive(fz_context *ctx, fz_stream *file)
 {
-	const unsigned char signature[6] = { 'u', 's', 't', 'a', 'r', ' ' };
+	const unsigned char gnusignature[6] = { 'u', 's', 't', 'a', 'r', ' ' };
+	const unsigned char paxsignature[6] = { 'u', 's', 't', 'a', 'r', '\0' };
+	const unsigned char v7signature[6] = { '\0', '\0', '\0', '\0', '\0', '\0' };
 	unsigned char data[6];
 	size_t n;
 
 	fz_seek(ctx, file, 257, 0);
 	n = fz_read(ctx, file, data, nelem(data));
-	if (n != nelem(signature))
+	if (n != nelem(data))
 		return 0;
-	if (memcmp(data, signature, nelem(signature)))
-		return 0;
+	if (!memcmp(data, gnusignature, nelem(gnusignature)))
+		return 1;
+	if (!memcmp(data, paxsignature, nelem(paxsignature)))
+		return 1;
+	if (!memcmp(data, v7signature, nelem(v7signature)))
+		return 1;
 
-	return 1;
+	return 0;
 }
 
 fz_archive *

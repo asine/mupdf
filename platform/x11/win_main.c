@@ -33,7 +33,6 @@ static HWND hwndframe = NULL;
 static HWND hwndview = NULL;
 static HDC hdc;
 static HBRUSH bgbrush;
-static HBRUSH shbrush;
 static BITMAPINFO *dibinf = NULL;
 static HCURSOR arrowcurs, handcurs, waitcurs, caretcurs;
 static LRESULT CALLBACK frameproc(HWND, UINT, WPARAM, LPARAM);
@@ -188,6 +187,16 @@ int winsavequery(pdfapp_t *app)
 	}
 }
 
+int winquery(pdfapp_t *app, const char *query)
+{
+	switch(MessageBoxA(hwndframe, query, "MuPDF", MB_YESNOCANCEL))
+	{
+	case IDYES: return QUERY_YES;
+	case IDNO:
+	default: return QUERY_NO;
+	}
+}
+
 int winfilename(wchar_t *buf, int len)
 {
 	OPENFILENAME ofn;
@@ -202,6 +211,37 @@ int winfilename(wchar_t *buf, int len)
 	ofn.lpstrFilter = L"Documents (*.pdf;*.xps;*.cbz;*.epub;*.fb2;*.zip;*.png;*.jpeg;*.tiff)\0*.zip;*.cbz;*.xps;*.epub;*.fb2;*.pdf;*.jpe;*.jpg;*.jpeg;*.jfif;*.tif;*.tiff\0PDF Files (*.pdf)\0*.pdf\0XPS Files (*.xps)\0*.xps\0CBZ Files (*.cbz;*.zip)\0*.zip;*.cbz\0EPUB Files (*.epub)\0*.epub\0FictionBook 2 Files (*.fb2)\0*.fb2\0Image Files (*.png;*.jpeg;*.tiff)\0*.png;*.jpg;*.jpe;*.jpeg;*.jfif;*.tif;*.tiff\0All Files\0*\0\0";
 	ofn.Flags = OFN_FILEMUSTEXIST|OFN_HIDEREADONLY;
 	return GetOpenFileNameW(&ofn);
+}
+
+int wingetcertpath(char *buf, int len)
+{
+	wchar_t twbuf[PATH_MAX] = {0};
+	OPENFILENAME ofn;
+	buf[0] = 0;
+	memset(&ofn, 0, sizeof(OPENFILENAME));
+	ofn.lStructSize = sizeof(OPENFILENAME);
+	ofn.hwndOwner = hwndframe;
+	ofn.lpstrFile = twbuf;
+	ofn.nMaxFile = PATH_MAX;
+	ofn.lpstrInitialDir = NULL;
+	ofn.lpstrTitle = L"MuPDF: Select certificate file";
+	ofn.lpstrFilter = L"Certificates (*.pfx)\0*.pfx\0All files\0*\0\0";
+	ofn.Flags = OFN_FILEMUSTEXIST;
+	if (GetOpenFileNameW(&ofn))
+	{
+		int code = WideCharToMultiByte(CP_UTF8, 0, twbuf, -1, buf, MIN(PATH_MAX, len), NULL, NULL);
+		if (code == 0)
+		{
+			winerror(&gapp, "cannot convert filename to utf-8");
+			return 0;
+		}
+
+		return 1;
+	}
+	else
+	{
+		return 0;
+	}
 }
 
 int wingetsavepath(pdfapp_t *app, char *buf, int len)
@@ -294,8 +334,8 @@ static char td_textinput[1024] = "";
 static int td_retry = 0;
 static int cd_nopts;
 static int *cd_nvals;
-static char **cd_opts;
-static char **cd_vals;
+static const char **cd_opts;
+static const char **cd_vals;
 static int pd_okay = 0;
 
 INT_PTR CALLBACK
@@ -450,7 +490,7 @@ char *wintextinput(pdfapp_t *app, char *inittext, int retry)
 	return NULL;
 }
 
-int winchoiceinput(pdfapp_t *app, int nopts, char *opts[], int *nvals, char *vals[])
+int winchoiceinput(pdfapp_t *app, int nopts, const char *opts[], int *nvals, const char *vals[])
 {
 	int code;
 	cd_nopts = nopts;
@@ -623,7 +663,6 @@ void winopen()
 
 	/* And a background color */
 	bgbrush = CreateSolidBrush(RGB(0x70,0x70,0x70));
-	shbrush = CreateSolidBrush(RGB(0x40,0x40,0x40));
 
 	/* Init DIB info for buffer */
 	dibinf = malloc(sizeof(BITMAPINFO) + 12);
@@ -760,12 +799,13 @@ void winblit()
 	int x1 = gapp.panx + image_w;
 	int y1 = gapp.pany + image_h;
 	RECT r;
+	HBRUSH brush;
 
 	if (gapp.image)
 	{
 		if (gapp.iscopying || justcopied)
 		{
-			pdfapp_invert(&gapp, &gapp.selr);
+			pdfapp_invert(&gapp, gapp.selr);
 			justcopied = 1;
 		}
 
@@ -805,34 +845,27 @@ void winblit()
 
 		if (gapp.iscopying || justcopied)
 		{
-			pdfapp_invert(&gapp, &gapp.selr);
+			pdfapp_invert(&gapp, gapp.selr);
 			justcopied = 1;
 		}
 	}
 
+	if (gapp.invert)
+		brush = (HBRUSH)GetStockObject(BLACK_BRUSH);
+	else
+		brush = bgbrush;
+
 	/* Grey background */
 	r.top = 0; r.bottom = gapp.winh;
 	r.left = 0; r.right = x0;
-	FillRect(hdc, &r, bgbrush);
+	FillRect(hdc, &r, brush);
 	r.left = x1; r.right = gapp.winw;
-	FillRect(hdc, &r, bgbrush);
+	FillRect(hdc, &r, brush);
 	r.left = 0; r.right = gapp.winw;
 	r.top = 0; r.bottom = y0;
-	FillRect(hdc, &r, bgbrush);
+	FillRect(hdc, &r, brush);
 	r.top = y1; r.bottom = gapp.winh;
-	FillRect(hdc, &r, bgbrush);
-
-	/* Drop shadow */
-	r.left = x0 + 2;
-	r.right = x1 + 2;
-	r.top = y1;
-	r.bottom = y1 + 2;
-	FillRect(hdc, &r, shbrush);
-	r.left = x1;
-	r.right = x1 + 2;
-	r.top = y0 + 2;
-	r.bottom = y1;
-	FillRect(hdc, &r, shbrush);
+	FillRect(hdc, &r, brush);
 
 	winblitsearch();
 }
@@ -1126,13 +1159,13 @@ viewproc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 	case WM_MOUSEWHEEL:
 		if ((signed short)HIWORD(wParam) <= 0)
 		{
-			handlemouse(oldx, oldy, 4, 1);
-			handlemouse(oldx, oldy, 4, -1);
+			handlemouse(oldx, oldy, 5, 1);
+			handlemouse(oldx, oldy, 5, -1);
 		}
 		else
 		{
-			handlemouse(oldx, oldy, 5, 1);
-			handlemouse(oldx, oldy, 5, -1);
+			handlemouse(oldx, oldy, 4, 1);
+			handlemouse(oldx, oldy, 4, -1);
 		}
 		return 0;
 
@@ -1210,9 +1243,9 @@ get_system_dpi(void)
 	return ((hdpi + vdpi) * 96 + 0.5f) / 200;
 }
 
-static void usage(void)
+static void usage(const char *argv0)
 {
-	fprintf(stderr, "usage: mupdf [options] file.pdf [page]\n");
+	fprintf(stderr, "usage: %s [options] file.pdf [page]\n", argv0);
 	fprintf(stderr, "\t-p -\tpassword\n");
 	fprintf(stderr, "\t-r -\tresolution\n");
 	fprintf(stderr, "\t-A -\tset anti-aliasing quality in bits (0=off, 8=best)\n");
@@ -1271,7 +1304,7 @@ WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nShow
 		case 'b': bps = (fz_optarg && *fz_optarg) ? fz_atoi(fz_optarg) : 4096; break;
 		case 'U': gapp.layout_css = fz_optarg; break;
 		case 'X': gapp.layout_use_doc_css = 0; break;
-		default: usage();
+		default: usage(argv[0]);
 		}
 	}
 

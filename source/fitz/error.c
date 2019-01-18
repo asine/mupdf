@@ -123,19 +123,17 @@ FZ_NORETURN static void throw(fz_context *ctx)
 	}
 }
 
-/* Only called when we hit the bottom of the exception stack.
- * Do the same as fz_throw, but don't actually throw. */
-static int fz_fake_throw(fz_context *ctx, int code, const char *fmt, ...)
+fz_jmp_buf *fz_push_try(fz_context *ctx)
 {
-	va_list args;
-	ctx->error->errcode = code;
-	va_start(args, fmt);
-	fz_vsnprintf(ctx->error->message, sizeof ctx->error->message, fmt, args);
-	ctx->error->message[sizeof(ctx->error->message) - 1] = 0;
-	va_end(args);
-
-	if (code != FZ_ERROR_ABORT)
+	/* If we would overflow the exception stack, throw an exception instead
+	 * of entering the try block. We assume that we always have room for
+	 * 1 extra level on the stack here - i.e. we throw the error on us
+	 * starting to use the last level. */
+	if (ctx->error->top + 2 >= ctx->error->stack + nelem(ctx->error->stack))
 	{
+		ctx->error->errcode = FZ_ERROR_GENERIC;
+		fz_strlcpy(ctx->error->message, "exception stack overflow!", sizeof ctx->error->message);
+
 		fz_flush_warnings(ctx);
 		fprintf(stderr, "error: %s\n", ctx->error->message);
 #ifdef USE_OUTPUT_DEBUG_STRING
@@ -146,27 +144,45 @@ static int fz_fake_throw(fz_context *ctx, int code, const char *fmt, ...)
 #ifdef USE_ANDROID_LOG
 		__android_log_print(ANDROID_LOG_ERROR, "libmupdf", "%s", ctx->error->message);
 #endif
-	}
 
-	/* We need to arrive in the always/catch block as if throw
-	 * had taken place. */
-	ctx->error->top++;
-	ctx->error->top->code = 2;
-	return 0;
+		/* We need to arrive in the always/catch block as if throw had taken place. */
+		ctx->error->top++;
+		ctx->error->top->code = 2;
+	}
+	else
+	{
+		ctx->error->top++;
+		ctx->error->top->code = 0;
+	}
+	return &ctx->error->top->buffer;
 }
 
-int fz_push_try(fz_context *ctx)
+int fz_do_try(fz_context *ctx)
 {
-	/* If we would overflow the exception stack, throw an exception instead
-	 * of entering the try block. We assume that we always have room for
-	 * 1 extra level on the stack here - i.e. we throw the error on us
-	 * starting to use the last level. */
-	if (ctx->error->top + 2 >= ctx->error->stack + nelem(ctx->error->stack))
-		return fz_fake_throw(ctx, FZ_ERROR_GENERIC, "exception stack overflow!");
-
-	ctx->error->top++;
-	ctx->error->top->code = 0;
+#ifdef __COVERITY__
 	return 1;
+#else
+	return ctx->error->top->code == 0;
+#endif
+}
+
+int fz_do_always(fz_context *ctx)
+{
+#ifdef __COVERITY__
+	return 1;
+#else
+	if (ctx->error->top->code < 3)
+	{
+		ctx->error->top->code++;
+		return 1;
+	}
+	return 0;
+#endif
+}
+
+int fz_do_catch(fz_context *ctx)
+{
+	return (ctx->error->top--)->code > 1;
 }
 
 int fz_caught(fz_context *ctx)
@@ -181,6 +197,7 @@ const char *fz_caught_message(fz_context *ctx)
 	return ctx->error->message;
 }
 
+/* coverity[+kill] */
 FZ_NORETURN void fz_vthrow(fz_context *ctx, int code, const char *fmt, va_list ap)
 {
 	ctx->error->errcode = code;
@@ -204,6 +221,7 @@ FZ_NORETURN void fz_vthrow(fz_context *ctx, int code, const char *fmt, va_list a
 	throw(ctx);
 }
 
+/* coverity[+kill] */
 FZ_NORETURN void fz_throw(fz_context *ctx, int code, const char *fmt, ...)
 {
 	va_list ap;
@@ -212,6 +230,7 @@ FZ_NORETURN void fz_throw(fz_context *ctx, int code, const char *fmt, ...)
 	va_end(ap);
 }
 
+/* coverity[+kill] */
 FZ_NORETURN void fz_rethrow(fz_context *ctx)
 {
 	assert(ctx && ctx->error && ctx->error->errcode >= FZ_ERROR_NONE);

@@ -1,12 +1,12 @@
 # Optional thirdparty libraryes
 thirdparty/luratech
 thirdparty/jpegxr
+thirdparty/mapping-resources-pdf
+thirdparty/cmap-resources
 
 # Generated files:
 build
 generated
-include/mupdf/pdf/name-table.h
-source/pdf/pdf-name-table.h
 tags
 cscope.*
 
@@ -15,14 +15,13 @@ cscope.*
 .*.swp
 .DS_Store
 \#*\#
-bin
-obj
 
 # Editor settings:
 .vimrc
 .gradle
 *.xcworkspace
 *.xcuserdatad
+user.make
 
 # Test files:
 *.pdf
@@ -62,6 +61,8 @@ platform/win32/Release
 platform/win32/ReleaseOpenssl
 platform/win32/Memento
 platform/win32/x64
-.vs
 *.filters
-*.log
+.vs
+bin
+obj
+/platform/win32/Win32/Release

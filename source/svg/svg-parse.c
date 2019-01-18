@@ -117,35 +117,23 @@ svg_parse_angle(const char *str)
 }
 
 /* Coordinate transformations */
-void
-svg_parse_transform(fz_context *ctx, svg_document *doc, char *str, fz_matrix *transform)
+fz_matrix
+svg_parse_transform(fz_context *ctx, svg_document *doc, const char *str, fz_matrix transform)
 {
 	char keyword[20];
 	int keywordlen;
-	char number[20];
-	int numberlen;
 	float args[6];
 	int nargs;
-	int first = 1;
 
 	nargs = 0;
 	keywordlen = 0;
 
 	while (*str)
 	{
-		while (svg_is_whitespace(*str))
+		while (svg_is_whitespace_or_comma(*str))
 			str ++;
 		if (*str == 0)
 			break;
-
-		if (!first)
-		{
-			if (*str == ',')
-				str ++;
-			while (svg_is_whitespace(*str))
-				str ++;
-		}
-		first = 0;
 
 		/*
 		 * Parse keyword and opening parenthesis.
@@ -173,23 +161,10 @@ svg_parse_transform(fz_context *ctx, svg_document *doc, char *str, fz_matrix *tr
 		nargs = 0;
 		while (*str && *str != ')' && nargs < 6)
 		{
-			if (nargs > 0 && *str == ',')
+			while (svg_is_whitespace_or_comma(*str))
 				str ++;
-			while (svg_is_whitespace(*str))
-				str ++;
-
-			numberlen = 0;
-			while (svg_is_digit(*str) && numberlen < sizeof(number) - 1)
-				number[numberlen++] = *str++;
-			number[numberlen] = 0;
-
-			if (numberlen == 0)
-				fz_throw(ctx, FZ_ERROR_SYNTAX, "expected number in transform attribute");
-
-			args[nargs++] = fz_atof(number);
-
-			while (svg_is_whitespace(*str))
-				str ++;
+			if (svg_is_digit(*str))
+				str = svg_lex_number(&args[nargs++], str);
 		}
 
 		if (*str != ')')
@@ -214,7 +189,7 @@ svg_parse_transform(fz_context *ctx, svg_document *doc, char *str, fz_matrix *tr
 			m.e = args[4];
 			m.f = args[5];
 
-			fz_concat(transform, transform, &m);
+			transform = fz_concat(transform, m);
 		}
 
 		else if (!strcmp(keyword, "translate"))
@@ -222,15 +197,15 @@ svg_parse_transform(fz_context *ctx, svg_document *doc, char *str, fz_matrix *tr
 			if (nargs != 2)
 				fz_throw(ctx, FZ_ERROR_SYNTAX, "wrong number of arguments to translate(): %d", nargs);
 
-			fz_pre_translate(transform, args[0], args[1]);
+			transform = fz_pre_translate(transform, args[0], args[1]);
 		}
 
 		else if (!strcmp(keyword, "scale"))
 		{
 			if (nargs == 1)
-				fz_pre_scale(transform, args[0], args[0]);
+				transform = fz_pre_scale(transform, args[0], args[0]);
 			else if (nargs == 2)
-				fz_pre_scale(transform, args[0], args[1]);
+				transform = fz_pre_scale(transform, args[0], args[1]);
 			else
 				fz_throw(ctx, FZ_ERROR_SYNTAX, "wrong number of arguments to scale(): %d", nargs);
 		}
@@ -239,7 +214,7 @@ svg_parse_transform(fz_context *ctx, svg_document *doc, char *str, fz_matrix *tr
 		{
 			if (nargs != 1)
 				fz_throw(ctx, FZ_ERROR_SYNTAX, "wrong number of arguments to rotate(): %d", nargs);
-			fz_pre_rotate(transform, args[0]);
+			transform = fz_pre_rotate(transform, args[0]);
 		}
 
 		else if (!strcmp(keyword, "skewX"))
@@ -256,7 +231,7 @@ svg_parse_transform(fz_context *ctx, svg_document *doc, char *str, fz_matrix *tr
 			m.e = 0;
 			m.f = 0;
 
-			fz_concat(transform, transform, &m);
+			transform = fz_concat(transform, m);
 		}
 
 		else if (!strcmp(keyword, "skewY"))
@@ -273,7 +248,7 @@ svg_parse_transform(fz_context *ctx, svg_document *doc, char *str, fz_matrix *tr
 			m.e = 0;
 			m.f = 0;
 
-			fz_concat(transform, transform, &m);
+			transform = fz_concat(transform, m);
 		}
 
 		else
@@ -281,4 +256,6 @@ svg_parse_transform(fz_context *ctx, svg_document *doc, char *str, fz_matrix *tr
 			fz_throw(ctx, FZ_ERROR_SYNTAX, "unknown transform function: %s", keyword);
 		}
 	}
+
+	return transform;
 }

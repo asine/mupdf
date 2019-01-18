@@ -205,9 +205,18 @@ static void fmtquote(struct fmtbuf *out, const char *s, int sq, int eq)
 		default:
 			if (c < 32 || c > 127) {
 				fmtputc(out, '\\');
-				fmtputc(out, '0' + ((c >> 6) & 7));
-				fmtputc(out, '0' + ((c >> 3) & 7));
-				fmtputc(out, '0' + ((c) & 7));
+				if (sq == '(')
+				{
+					fmtputc(out, '0' + ((c >> 6) & 7));
+					fmtputc(out, '0' + ((c >> 3) & 7));
+					fmtputc(out, '0' + ((c) & 7));
+				}
+				else
+				{
+					fmtputc(out, 'x');
+					fmtputc(out, "0123456789ABCDEF"[(c>>4)&15]);
+					fmtputc(out, "0123456789ABCDEF"[(c)&15]);
+				}
 			} else {
 				if (c == sq || c == eq)
 					fmtputc(out, '\\');
@@ -474,13 +483,15 @@ fz_vsnprintf(char *buffer, size_t space, const char *fmt, va_list args)
 {
 	struct snprintf_buffer out;
 	out.p = buffer;
-	out.s = space;
+	out.s = space > 0 ? space - 1 : 0;
 	out.n = 0;
 
 	/* Note: using a NULL context is safe here */
 	fz_format_string(NULL, &out, snprintf_emit, fmt, args);
-	snprintf_emit(NULL, &out, 0);
-	return out.n - 1;
+	if (space > 0)
+		out.p[out.n < space ? out.n : space - 1] = '\0';
+
+	return out.n;
 }
 
 size_t
@@ -489,16 +500,17 @@ fz_snprintf(char *buffer, size_t space, const char *fmt, ...)
 	va_list ap;
 	struct snprintf_buffer out;
 	out.p = buffer;
-	out.s = space;
+	out.s = space > 0 ? space - 1 : 0;
 	out.n = 0;
 
 	va_start(ap, fmt);
 	/* Note: using a NULL context is safe here */
 	fz_format_string(NULL, &out, snprintf_emit, fmt, ap);
-	snprintf_emit(NULL, &out, 0);
+	if (space > 0)
+		out.p[out.n < space ? out.n : space - 1] = '\0';
 	va_end(ap);
 
-	return out.n - 1;
+	return out.n;
 }
 
 char *

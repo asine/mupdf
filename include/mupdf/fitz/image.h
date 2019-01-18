@@ -44,7 +44,7 @@ typedef struct fz_pixmap_image_s fz_pixmap_image;
 
 	Returns a non NULL pixmap pointer. May throw exceptions.
 */
-fz_pixmap *fz_get_pixmap_from_image(fz_context *ctx, fz_image *image, const fz_irect *subarea, fz_matrix *trans, int *w, int *h);
+fz_pixmap *fz_get_pixmap_from_image(fz_context *ctx, fz_image *image, const fz_irect *subarea, fz_matrix *ctm, int *w, int *h);
 
 /*
 	fz_drop_image: Drop a reference to an image.
@@ -185,8 +185,7 @@ fz_image *fz_new_image_of_size(fz_context *ctx,
 	interpolate: 1 if interpolation should be used when decoding
 	this image, 0 otherwise.
 
-	imagemask: 1 if this is an imagemask (i.e. transparent), 0
-	otherwise.
+	imagemask: 1 if this is an imagemask (i.e. transparency bitmap mask), 0 otherwise.
 
 	decode: NULL, or a pointer to to a decode array. The default
 	decode array is [0 1] (repeated n times, for n color components).
@@ -286,6 +285,8 @@ void fz_load_pnm_info(fz_context *ctx, const unsigned char *data, size_t size, i
 
 int fz_load_tiff_subimage_count(fz_context *ctx, const unsigned char *buf, size_t len);
 fz_pixmap *fz_load_tiff_subimage(fz_context *ctx, const unsigned char *buf, size_t len, int subimage);
+int fz_load_pnm_subimage_count(fz_context *ctx, const unsigned char *buf, size_t len);
+fz_pixmap *fz_load_pnm_subimage(fz_context *ctx, const unsigned char *buf, size_t len, int subimage);
 
 /*
 	fz_image_resolution: Request the natural resolution

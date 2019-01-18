@@ -59,7 +59,6 @@ static char lorem[] =
 "pulvinar at. Proin sed arcu vel odio tempus lobortis sed posuere ipsum. Ut "
 "feugiat pellentesque tortor nec ornare.\n";
 
-
 static void usage(void)
 {
 	fprintf(stderr, "usage: mjsgen [-p password] input.pdf output.mjs\n");
@@ -113,7 +112,7 @@ static void processpage(fz_context *ctx, FILE *output, fz_document *doc, int pag
 		int w, h, len;
 		int type = pdf_widget_type(ctx, widget);
 
-		pdf_bound_widget(ctx, widget, &rect);
+		rect = pdf_bound_widget(ctx, widget);
 		w = (rect.x1 - rect.x0);
 		h = (rect.y1 - rect.y0);
 		++count;

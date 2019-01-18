@@ -7,15 +7,89 @@
 #include <math.h>
 #include <string.h>
 
-/* CMM module */
+/* Colorspace feature tests */
 
-int
-fz_cmm_avoid_white_fix_flag(fz_context *ctx)
+int fz_colorspace_is_gray(fz_context *ctx, const fz_colorspace *cs)
 {
-	if (ctx && ctx->colorspace && ctx->colorspace->cmm && ctx->cmm_instance)
-		return ctx->colorspace->cmm->avoid_white_fix_flag;
-	return 0;
+	return cs && cs->type == FZ_COLORSPACE_GRAY;
 }
+
+int fz_colorspace_is_rgb(fz_context *ctx, const fz_colorspace *cs)
+{
+	return cs && cs->type == FZ_COLORSPACE_RGB;
+}
+
+int fz_colorspace_is_bgr(fz_context *ctx, const fz_colorspace *cs)
+{
+	return cs && cs->type == FZ_COLORSPACE_BGR;
+}
+
+int fz_colorspace_is_cmyk(fz_context *ctx, const fz_colorspace *cs)
+{
+	return cs && cs->type == FZ_COLORSPACE_CMYK;
+}
+
+int fz_colorspace_is_lab(fz_context *ctx, const fz_colorspace *cs)
+{
+	return cs && cs->type == FZ_COLORSPACE_LAB;
+}
+
+int fz_colorspace_is_indexed(fz_context *ctx, const fz_colorspace *cs)
+{
+	return cs && (cs->type == FZ_COLORSPACE_INDEXED);
+}
+
+int fz_colorspace_is_device_n(fz_context *ctx, const fz_colorspace *cs)
+{
+	return cs && (cs->type == FZ_COLORSPACE_SEPARATION);
+}
+
+int fz_colorspace_is_subtractive(fz_context *ctx, const fz_colorspace *cs)
+{
+	return cs && (cs->type == FZ_COLORSPACE_CMYK || cs->type == FZ_COLORSPACE_SEPARATION);
+}
+
+int fz_colorspace_is_device(fz_context *ctx, const fz_colorspace *cs)
+{
+	return cs && (cs->flags & FZ_COLORSPACE_IS_DEVICE);
+}
+
+int fz_colorspace_is_icc(fz_context *ctx, const fz_colorspace *cs)
+{
+	return cs && (cs->flags & FZ_COLORSPACE_IS_ICC);
+}
+
+int fz_colorspace_is_cal(fz_context *ctx, const fz_colorspace *cs)
+{
+	return cs && (cs->flags & FZ_COLORSPACE_IS_CAL);
+}
+
+int fz_colorspace_is_lab_icc(fz_context *ctx, const fz_colorspace *cs)
+{
+	return fz_colorspace_is_lab(ctx, cs) && fz_colorspace_is_icc(ctx, cs);
+}
+
+int fz_colorspace_is_device_gray(fz_context *ctx, const fz_colorspace *cs)
+{
+	return fz_colorspace_is_device(ctx, cs) && fz_colorspace_is_gray(ctx, cs);
+}
+
+int fz_colorspace_is_device_cmyk(fz_context *ctx, const fz_colorspace *cs)
+{
+	return fz_colorspace_is_device(ctx, cs) && fz_colorspace_is_cmyk(ctx, cs);
+}
+
+int fz_colorspace_device_n_has_only_cmyk(fz_context *ctx, const fz_colorspace *cs)
+{
+	return cs && ((cs->flags & FZ_CS_HAS_CMYK_AND_SPOTS) == FZ_CS_HAS_CMYK);
+}
+
+int fz_colorspace_device_n_has_cmyk(fz_context *ctx, const fz_colorspace *cs)
+{
+	return cs && (cs->flags & FZ_CS_HAS_CMYK);
+}
+
+/* CMM module */
 
 void
 fz_cmm_transform_pixmap(fz_context *ctx, fz_icclink *link, fz_pixmap *dst, fz_pixmap *src)
@@ -71,41 +145,81 @@ void fz_cmm_fin_profile(fz_context *ctx, fz_iccprofile *profile)
 			ctx->colorspace->cmm->fin_profile(ctx->cmm_instance, profile);
 }
 
-#define SLOWCMYK
+void fz_premultiply_row(fz_context *ctx, int n, int c, int w, unsigned char *s)
+{
+	unsigned char a;
+	int k;
+	int n1 = n-1;
+
+	for (; w > 0; w--)
+	{
+		a = s[n1];
+		for (k = 0; k < c; k++)
+			s[k] = fz_mul255(s[k], a);
+		s += n;
+	}
+}
+
+void fz_unmultiply_row(fz_context *ctx, int n, int c, int w, unsigned char *s, const unsigned char *in)
+{
+	int a, inva;
+	int k;
+	int n1 = n-1;
+
+	for (; w > 0; w--)
+	{
+		a = in[n1];
+		inva = a ? 255 * 256 / a : 0;
+		for (k = 0; k < c; k++)
+			s[k] = (in[k] * inva) >> 8;
+		for (;k < n1; k++)
+			s[k] = in[k];
+		s[n1] = a;
+		s += n;
+		in += n;
+	}
+}
+
+#if FZ_ENABLE_ICC
+
+#include "icc/gray.icc.h"
+#include "icc/rgb.icc.h"
+#include "icc/cmyk.icc.h"
+#include "icc/lab.icc.h"
 
 const unsigned char *
-fz_lookup_icc(fz_context *ctx, const char *name, size_t *size)
+fz_lookup_icc(fz_context *ctx, enum fz_colorspace_type type, size_t *size)
 {
-#ifndef NO_ICC
 	if (fz_get_cmm_engine(ctx) == NULL)
 		return *size = 0, NULL;
-	if (!strcmp(name, FZ_ICC_PROFILE_GRAY)) {
-		extern const int fz_resources_icc_gray_icc_size;
-		extern const unsigned char fz_resources_icc_gray_icc[];
-		*size = fz_resources_icc_gray_icc_size;
-		return fz_resources_icc_gray_icc;
+	if (type == FZ_COLORSPACE_GRAY) {
+		*size = resources_icc_gray_icc_len;
+		return resources_icc_gray_icc;
 	}
-	if (!strcmp(name, FZ_ICC_PROFILE_RGB) || !strcmp(name, FZ_ICC_PROFILE_BGR)) {
-		extern const int fz_resources_icc_rgb_icc_size;
-		extern const unsigned char fz_resources_icc_rgb_icc[];
-		*size = fz_resources_icc_rgb_icc_size;
-		return fz_resources_icc_rgb_icc;
+	if (type == FZ_COLORSPACE_RGB || type == FZ_COLORSPACE_BGR) {
+		*size = resources_icc_rgb_icc_len;
+		return resources_icc_rgb_icc;
 	}
-	if (!strcmp(name, FZ_ICC_PROFILE_CMYK)) {
-		extern const int fz_resources_icc_cmyk_icc_size;
-		extern const unsigned char fz_resources_icc_cmyk_icc[];
-		*size = fz_resources_icc_cmyk_icc_size;
-		return fz_resources_icc_cmyk_icc;
+	if (type == FZ_COLORSPACE_CMYK) {
+		*size = resources_icc_cmyk_icc_len;
+		return resources_icc_cmyk_icc;
 	}
-	if (!strcmp(name, FZ_ICC_PROFILE_LAB)) {
-		extern const int fz_resources_icc_lab_icc_size;
-		extern const unsigned char fz_resources_icc_lab_icc[];
-		*size = fz_resources_icc_lab_icc_size;
-		return fz_resources_icc_lab_icc;
+	if (type == FZ_COLORSPACE_LAB) {
+		*size = resources_icc_lab_icc_len;
+		return resources_icc_lab_icc;
 	}
-#endif
 	return *size = 0, NULL;
 }
+
+#else
+
+const unsigned char *
+fz_lookup_icc(fz_context *ctx, enum fz_colorspace_type type, size_t *size)
+{
+	return *size = 0, NULL;
+}
+
+#endif
 
 /* Same order as needed by lcms */
 static const char *fz_intent_names[] =
@@ -144,6 +258,7 @@ fz_drop_colorspace_imp(fz_context *ctx, fz_storable *cs_)
 		cs->free_data(ctx, cs);
 	for (i = 0; i < FZ_MAX_COLORS; i++)
 		fz_free(ctx, cs->colorant[i]);
+	fz_free(ctx, cs->name);
 	fz_free(ctx, cs);
 }
 
@@ -157,14 +272,29 @@ clamp_default(const fz_colorspace *cs, const float *src, float *dst)
 }
 
 fz_colorspace *
-fz_new_colorspace(fz_context *ctx, const char *name, int n, int flags, fz_colorspace_convert_fn *to_ccs, fz_colorspace_convert_fn *from_ccs, fz_colorspace_base_fn *base, fz_colorspace_clamp_fn *clamp, fz_colorspace_destruct_fn *destruct, void *data, size_t size)
+fz_new_colorspace(fz_context *ctx,
+		const char *name,
+		enum fz_colorspace_type type, int flags, int n,
+		fz_colorspace_convert_fn *to_ccs,
+		fz_colorspace_convert_fn *from_ccs,
+		fz_colorspace_base_fn *base,
+		fz_colorspace_clamp_fn *clamp,
+		fz_colorspace_destruct_fn *destruct,
+		void *data, size_t size)
 {
 	fz_colorspace *cs = fz_malloc_struct(ctx, fz_colorspace);
 	FZ_INIT_KEY_STORABLE(cs, 1, fz_drop_colorspace_imp);
 	cs->size = sizeof(fz_colorspace) + size;
-	fz_strlcpy(cs->name, name ? name : "UNKNOWN", sizeof cs->name);
+	fz_try(ctx)
+		cs->name = fz_strdup(ctx, name ? name : "UNKNOWN");
+	fz_catch(ctx)
+	{
+		fz_free(ctx, cs);
+		fz_rethrow(ctx);
+	}
+	cs->type = type;
+	cs->flags = flags;
 	cs->n = n;
-	cs->flags = (unsigned char)flags;
 	cs->to_ccs = to_ccs;
 	cs->from_ccs = from_ccs;
 	cs->get_base = base;
@@ -201,6 +331,12 @@ void
 fz_drop_colorspace_store_key(fz_context *ctx, fz_colorspace *cs)
 {
 	fz_drop_key_storable_key(ctx, &cs->key_storable);
+}
+
+enum fz_colorspace_type
+fz_colorspace_type(fz_context *ctx, fz_colorspace *cs)
+{
+	return cs ? cs->type : FZ_COLORSPACE_NONE;
 }
 
 /* icc links */
@@ -392,12 +528,53 @@ fz_icc_from_cal(fz_context *ctx, const fz_colorspace *cs)
 	return profile;
 }
 
+static fz_iccprofile *
+fz_get_icc_from_cal(fz_context *ctx, const fz_colorspace *cs)
+{
+	fz_cal_colorspace *cal;
+	fz_iccprofile *icc = NULL;
+
+	cal = cs->data;
+	icc = cal->profile;
+	/* Check if we have any work to do. */
+	if (icc == NULL)
+		icc = fz_icc_from_cal(ctx, cs);
+	if (icc->cmm_handle == NULL)
+	{
+		fz_cmm_init_profile(ctx, icc);
+
+		/* The CMM failed to make a profile. Use the default. */
+		if (icc->cmm_handle == NULL)
+		{
+			switch (cs->n)
+			{
+			case 1:
+				icc = fz_device_gray(ctx)->data;
+				break;
+			case 3:
+				icc = fz_device_rgb(ctx)->data;
+				break;
+			case 4:
+				icc = fz_device_cmyk(ctx)->data;
+				break;
+			default:
+				fz_throw(ctx, FZ_ERROR_GENERIC, "Poorly formed Cal color space");
+			}
+			/* To avoid repeated failures building the pdf-cal color space,
+			* assign the default profile. */
+			fz_cmm_fin_profile(ctx, icc);
+			cal->profile = icc;
+		}
+	}
+	return icc;
+}
+
 static fz_icclink *
 fz_get_icc_link(fz_context *ctx, const fz_colorspace *dst, int dst_extras, const fz_colorspace *src, int src_extras, const fz_colorspace *prf, const fz_color_params *rend, int num_bytes, int copy_spots, int *src_n)
 {
 	fz_icclink *link = NULL;
 	fz_iccprofile *src_icc = NULL;
-	fz_iccprofile *dst_icc = dst->data;
+	fz_iccprofile *dst_icc = NULL;
 	fz_iccprofile *prf_icc = NULL;
 	fz_link_key *key = NULL;
 	fz_icclink *new_link;
@@ -410,46 +587,18 @@ fz_get_icc_link(fz_context *ctx, const fz_colorspace *dst, int dst_extras, const
 	if (fz_colorspace_is_icc(ctx, src))
 		src_icc = src->data;
 	else if (fz_colorspace_is_cal(ctx, src))
-	{
-		fz_cal_colorspace *cal;
-
-		cal = src->data;
-		src_icc = cal->profile;
-		/* Check if we have any work to do. */
-		if (src_icc == NULL)
-			src_icc = fz_icc_from_cal(ctx, src);
-		if (src_icc->cmm_handle == NULL)
-		{
-			fz_cmm_init_profile(ctx, src_icc);
-
-			/* The CMM failed to make a profile. Use the default. */
-			if (src_icc->cmm_handle == NULL)
-			{
-				switch (src->n)
-				{
-				case 1:
-					src_icc = fz_device_gray(ctx)->data;
-					break;
-				case 3:
-					src_icc = fz_device_rgb(ctx)->data;
-					break;
-				case 4:
-					src_icc = fz_device_cmyk(ctx)->data;
-					break;
-				default:
-					fz_throw(ctx, FZ_ERROR_GENERIC, "Poorly formed Cal color space");
-				}
-				/* To avoid repeated failures building the pdf-cal color space,
-				 * assign the default profile. */
-				fz_cmm_fin_profile(ctx, src_icc);
-				cal->profile = src_icc;
-			}
-		}
-	}
+		src_icc = fz_get_icc_from_cal(ctx, src);
 	else
 		src_icc = get_base_icc_profile(ctx, src);
 
-	if (src_icc == NULL)
+	if (fz_colorspace_is_icc(ctx, dst))
+		dst_icc = dst->data;
+	else if (fz_colorspace_is_cal(ctx, dst))
+		dst_icc = fz_get_icc_from_cal(ctx, dst);
+	else
+		dst_icc = get_base_icc_profile(ctx, dst);
+
+	if (dst_icc == NULL || src_icc == NULL)
 		fz_throw(ctx, FZ_ERROR_GENERIC, "Profile missing during link creation");
 
 	*src_n = src_icc->num_devcomp;
@@ -541,81 +690,9 @@ static void rgb_to_bgr(fz_context *ctx, const fz_colorspace *cs, const float *rg
 
 static void cmyk_to_rgb(fz_context *ctx, const fz_colorspace *cs, const float *cmyk, float *rgb)
 {
-#ifdef SLOWCMYK /* from poppler */
-	float c = cmyk[0], m = cmyk[1], y = cmyk[2], k = cmyk[3];
-	float r, g, b, x;
-	float cm = c * m;
-	float c1m = m - cm;
-	float cm1 = c - cm;
-	float c1m1 = 1 - m - cm1;
-	float c1m1y = c1m1 * y;
-	float c1m1y1 = c1m1 - c1m1y;
-	float c1my = c1m * y;
-	float c1my1 = c1m - c1my;
-	float cm1y = cm1 * y;
-	float cm1y1 = cm1 - cm1y;
-	float cmy = cm * y;
-	float cmy1 = cm - cmy;
-
-	/* this is a matrix multiplication, unrolled for performance */
-	x = c1m1y1 * k;		/* 0 0 0 1 */
-	r = g = b = c1m1y1 - x;	/* 0 0 0 0 */
-	r += 0.1373f * x;
-	g += 0.1216f * x;
-	b += 0.1255f * x;
-
-	x = c1m1y * k;		/* 0 0 1 1 */
-	r += 0.1098f * x;
-	g += 0.1020f * x;
-	x = c1m1y - x;		/* 0 0 1 0 */
-	r += x;
-	g += 0.9490f * x;
-
-	x = c1my1 * k;		/* 0 1 0 1 */
-	r += 0.1412f * x;
-	x = c1my1 - x;		/* 0 1 0 0 */
-	r += 0.9255f * x;
-	b += 0.5490f * x;
-
-	x = c1my * k;		/* 0 1 1 1 */
-	r += 0.1333f * x;
-	x = c1my - x;		/* 0 1 1 0 */
-	r += 0.9294f * x;
-	g += 0.1098f * x;
-	b += 0.1412f * x;
-
-	x = cm1y1 * k;		/* 1 0 0 1 */
-	g += 0.0588f * x;
-	b += 0.1412f * x;
-	x = cm1y1 - x;		/* 1 0 0 0 */
-	g += 0.6784f * x;
-	b += 0.9373f * x;
-
-	x = cm1y * k;		/* 1 0 1 1 */
-	g += 0.0745f * x;
-	x = cm1y - x;		/* 1 0 1 0 */
-	g += 0.6510f * x;
-	b += 0.3137f * x;
-
-	x = cmy1 * k;		/* 1 1 0 1 */
-	b += 0.0078f * x;
-	x = cmy1 - x;		/* 1 1 0 0 */
-	r += 0.1804f * x;
-	g += 0.1922f * x;
-	b += 0.5725f * x;
-
-	x = cmy * (1-k);	/* 1 1 1 0 */
-	r += 0.2118f * x;
-	g += 0.2119f * x;
-	b += 0.2235f * x;
-	rgb[0] = fz_clamp(r, 0, 1);
-	rgb[1] = fz_clamp(g, 0, 1);
-	rgb[2] = fz_clamp(b, 0, 1);
-#else
 	rgb[0] = 1 - fz_min(1, cmyk[0] + cmyk[3]);
 	rgb[1] = 1 - fz_min(1, cmyk[1] + cmyk[3]);
 	rgb[2] = 1 - fz_min(1, cmyk[2] + cmyk[3]);
-#endif
 }
 
 static void rgb_to_cmyk(fz_context *ctx, const fz_colorspace *cs, const float *rgb, float *cmyk)
@@ -679,22 +756,12 @@ clamp_lab(const fz_colorspace *cs, const float *src, float *dst)
 		dst[i] = fz_clamp(src[i], i ? -128 : 0, i ? 127 : 100);
 }
 
-int fz_colorspace_is_lab(fz_context *ctx, const fz_colorspace *cs)
-{
-	return cs && cs->to_ccs == lab_to_rgb;
-}
+static fz_colorspace k_default_gray = { { {-1, fz_drop_colorspace_imp}, 0 }, 0, "DeviceGray", FZ_COLORSPACE_GRAY, FZ_COLORSPACE_IS_DEVICE, 1, gray_to_rgb, rgb_to_gray, clamp_default, NULL, NULL, NULL, { "Gray" } };
+static fz_colorspace k_default_rgb = { { {-1, fz_drop_colorspace_imp}, 0 }, 0, "DeviceRGB", FZ_COLORSPACE_RGB, FZ_COLORSPACE_IS_DEVICE, 3, rgb_to_rgb, rgb_to_rgb, clamp_default, NULL, NULL, NULL, { "Red", "Green", "Blue" } };
+static fz_colorspace k_default_bgr = { { {-1, fz_drop_colorspace_imp}, 0 }, 0, "DeviceBGR", FZ_COLORSPACE_BGR, FZ_COLORSPACE_IS_DEVICE, 3, bgr_to_rgb, rgb_to_bgr, clamp_default, NULL, NULL, NULL, { "Blue", "Green", "Red" }  };
+static fz_colorspace k_default_cmyk = { { {-1, fz_drop_colorspace_imp}, 0 }, 0, "DeviceCMYK", FZ_COLORSPACE_CMYK, FZ_COLORSPACE_IS_DEVICE, 4, cmyk_to_rgb, rgb_to_cmyk, clamp_default, NULL, NULL, NULL, { "Cyan", "Magenta", "Yellow", "Black" } };
+static fz_colorspace k_default_lab = { { {-1, fz_drop_colorspace_imp}, 0 }, 0, "Lab", FZ_COLORSPACE_LAB, 0, 3, lab_to_rgb, rgb_to_lab, clamp_lab, NULL, NULL, NULL, { "L*", "a*", "b*" } };
 
-int
-fz_colorspace_is_subtractive(fz_context *ctx, const fz_colorspace *cs)
-{
-	return (cs && !!(cs->flags & FZ_CS_SUBTRACTIVE));
-}
-
-static fz_colorspace k_default_gray = { { {-1, fz_drop_colorspace_imp}, 0 }, 0, "DeviceGray", 1, FZ_CS_DEVICE_GRAY, gray_to_rgb, rgb_to_gray, clamp_default, NULL, NULL, NULL, { "Gray" } };
-static fz_colorspace k_default_rgb = { { {-1, fz_drop_colorspace_imp}, 0 }, 0, "DeviceRGB", 3, 0, rgb_to_rgb, rgb_to_rgb, clamp_default, NULL, NULL, NULL, { "Red", "Green", "Blue" } };
-static fz_colorspace k_default_bgr = { { {-1, fz_drop_colorspace_imp}, 0 }, 0, "DeviceBGR", 3, 0, bgr_to_rgb, rgb_to_bgr, clamp_default, NULL, NULL, NULL, { "Blue", "Green", "Red" }  };
-static fz_colorspace k_default_cmyk = { { {-1, fz_drop_colorspace_imp}, 0 }, 0, "DeviceCMYK", 4, FZ_CS_SUBTRACTIVE, cmyk_to_rgb, rgb_to_cmyk, clamp_default, NULL, NULL, NULL, { "Cyan", "Magenta", "Yellow", "Black" } };
-static fz_colorspace k_default_lab = { { {-1, fz_drop_colorspace_imp}, 0 }, 0, "Lab", 3, 0, lab_to_rgb, rgb_to_lab, clamp_lab, NULL, NULL, NULL, { "L*", "a*", "b*" } };
 static fz_color_params k_default_color_params = { FZ_RI_RELATIVE_COLORIMETRIC, 1, 0, 0 };
 
 static fz_colorspace *default_gray = &k_default_gray;
@@ -729,14 +796,10 @@ void fz_set_cmm_engine(fz_context *ctx, const fz_cmm_engine *engine)
 	if (!cct)
 		return;
 
-#ifdef NO_ICC
-	if (engine)
-		fz_throw(ctx, FZ_ERROR_GENERIC, "ICC workflow not supported in NO_ICC build");
-#else
+#if FZ_ENABLE_ICC
 	if (cct->cmm == engine)
 		return;
 
-	fz_drop_cmm_context(ctx);
 	fz_drop_colorspace(ctx, cct->gray);
 	fz_drop_colorspace(ctx, cct->rgb);
 	fz_drop_colorspace(ctx, cct->bgr);
@@ -747,18 +810,42 @@ void fz_set_cmm_engine(fz_context *ctx, const fz_cmm_engine *engine)
 	cct->bgr = NULL;
 	cct->cmyk = NULL;
 	cct->lab = NULL;
+
+	fz_drop_cmm_context(ctx);
+
 	cct->cmm = engine;
+
 	fz_new_cmm_context(ctx);
+
 	if (engine)
 	{
-		cct->gray = fz_new_icc_colorspace(ctx, FZ_ICC_PROFILE_GRAY, 1, NULL);
-		cct->rgb = fz_new_icc_colorspace(ctx, FZ_ICC_PROFILE_RGB, 3, NULL);
-		cct->bgr = fz_new_icc_colorspace(ctx, FZ_ICC_PROFILE_BGR, 3, NULL);
-		cct->cmyk = fz_new_icc_colorspace(ctx, FZ_ICC_PROFILE_CMYK, 4, NULL);
-		cct->lab = fz_new_icc_colorspace(ctx, FZ_ICC_PROFILE_LAB, 3, NULL);
+		fz_try(ctx)
+		{
+			cct->gray = fz_new_icc_colorspace(ctx, FZ_COLORSPACE_GRAY, NULL);
+			cct->rgb = fz_new_icc_colorspace(ctx, FZ_COLORSPACE_RGB, NULL);
+			cct->bgr = fz_new_icc_colorspace(ctx, FZ_COLORSPACE_BGR, NULL);
+			cct->cmyk = fz_new_icc_colorspace(ctx, FZ_COLORSPACE_CMYK, NULL);
+			cct->lab = fz_new_icc_colorspace(ctx, FZ_COLORSPACE_LAB, NULL);
+		}
+		fz_catch(ctx)
+		{
+			fz_drop_colorspace(ctx, cct->gray);
+			fz_drop_colorspace(ctx, cct->rgb);
+			fz_drop_colorspace(ctx, cct->bgr);
+			fz_drop_colorspace(ctx, cct->cmyk);
+			fz_drop_colorspace(ctx, cct->lab);
+			fz_drop_cmm_context(ctx);
+			cct->cmm = NULL;
+			fz_new_cmm_context(ctx);
+			set_no_icc(cct);
+			fz_rethrow(ctx);
+		}
 	}
 	else
 		set_no_icc(cct);
+#else
+	if (engine)
+		fz_throw(ctx, FZ_ERROR_GENERIC, "ICC workflow not supported in FZ_ENABLE_ICC=0 build");
 #endif
 }
 
@@ -767,10 +854,10 @@ void fz_new_colorspace_context(fz_context *ctx)
 	ctx->colorspace = fz_malloc_struct(ctx, fz_colorspace_context);
 	ctx->colorspace->ctx_refs = 1;
 	set_no_icc(ctx->colorspace);
-#ifdef NO_ICC
-	fz_set_cmm_engine(ctx, NULL);
-#else
+#if FZ_ENABLE_ICC
 	fz_set_cmm_engine(ctx, &fz_cmm_engine_lcms);
+#else
+	fz_set_cmm_engine(ctx, NULL);
 #endif
 }
 
@@ -866,11 +953,10 @@ static void fast_gray_to_rgb(fz_context *ctx, fz_pixmap *dst, fz_pixmap *src, fz
 	ptrdiff_t s_line_inc = src->stride - w * sn;
 
 	/* If copying spots, they must match, and we can never drop alpha (but we can invent it) */
-	if ((copy_spots && ss != ds) || (!da && sa))
-	{
-		assert("This should never happen" == NULL);
-		fz_throw(ctx, FZ_ERROR_GENERIC, "Cannot convert between incompatible pixmaps");
-	}
+	if (copy_spots && ss != ds)
+		fz_throw(ctx, FZ_ERROR_GENERIC, "incompatible number of spots when converting pixmap");
+	if (!da && sa)
+		fz_throw(ctx, FZ_ERROR_GENERIC, "cannot drop alpha when converting pixmap");
 
 	if ((int)w < 0 || h < 0)
 		return;
@@ -999,129 +1085,66 @@ static void fast_gray_to_cmyk(fz_context *ctx, fz_pixmap *dst, fz_pixmap *src, f
 	int da = dst->alpha;
 	ptrdiff_t d_line_inc = dst->stride - w * dn;
 	ptrdiff_t s_line_inc = src->stride - w * sn;
+	int k, g;
+	int a = 255;
+	int i;
 
-	/* If copying spots, they must match, and we can never drop alpha (but we can invent it) */
-	if ((copy_spots && ss != ds) || (!da && sa))
-	{
-		assert("This should never happen" == NULL);
-		fz_throw(ctx, FZ_ERROR_GENERIC, "Cannot convert between incompatible pixmaps");
-	}
+	if (copy_spots && ss != ds)
+		fz_throw(ctx, FZ_ERROR_GENERIC, "incompatible number of spots when converting pixmap");
 
 	if ((int)w < 0 || h < 0)
-		return;
+		fz_throw(ctx, FZ_ERROR_GENERIC, "integer overflow");
 
-	if (d_line_inc == 0 && s_line_inc == 0)
+	while (h--)
 	{
-		w *= h;
-		h = 1;
-	}
-
-	if (ss == 0 && ds == 0)
-	{
-		/* Common, no spots case */
-		if (da)
+		size_t ww = w;
+		while (ww--)
 		{
+			g = s[0];
+
 			if (sa)
 			{
-				while (h--)
-				{
-					size_t ww = w;
-					while (ww--)
-					{
-						d[0] = 0;
-						d[1] = 0;
-						d[2] = 0;
-						d[3] = 255 - s[0];
-						d[4] = s[1];
-						s += 2;
-						d += 5;
-					}
-					d += d_line_inc;
-					s += s_line_inc;
-				}
+				a = s[1+ss];
+				g = fz_div255(g, a);
+			}
+
+			k = 255 - g;
+
+			if (da)
+			{
+				*d++ = 0;
+				*d++ = 0;
+				*d++ = 0;
+				*d++ = fz_mul255(k, a);
 			}
 			else
 			{
-				while (h--)
-				{
-					size_t ww = w;
-					while (ww--)
-					{
-						d[0] = 0;
-						d[1] = 0;
-						d[2] = 0;
-						d[3] = 255 - s[0];
-						d[4] = 255;
-						s++;
-						d += 5;
-					}
-					d += d_line_inc;
-					s += s_line_inc;
-				}
+				*d++ = 0;
+				*d++ = 0;
+				*d++ = 0;
+				*d++ = k;
 			}
-		}
-		else
-		{
-			while (h--)
+
+			if (copy_spots)
 			{
-				size_t ww = w;
-				while (ww--)
-				{
-					d[0] = 0;
-					d[1] = 0;
-					d[2] = 0;
-					d[3] = 255 - s[0];
-					s++;
-					d += 4;
-				}
-				d += d_line_inc;
-				s += s_line_inc;
-			}
-		}
-	}
-	else if (copy_spots)
-	{
-		/* Slower, spots capable version */
-		int i;
-		while (h--)
-		{
-			size_t ww = w;
-			while (ww--)
-			{
-				d[0] = 0;
-				d[1] = 0;
-				d[2] = 0;
-				d[3] = 255 - s[0];
 				s += 1;
-				d += 4;
-				for (i=ss; i > 0; i--)
+				for (i=ss; i > 0; --i)
 					*d++ = *s++;
-				if (da)
-					*d++ = sa ? *s++ : 255;
+				s += sa;
 			}
-			d += d_line_inc;
-			s += s_line_inc;
-		}
-	}
-	else
-	{
-		while (h--)
-		{
-			size_t ww = w;
-			while (ww--)
+			else
 			{
-				d[0] = 0;
-				d[1] = 0;
-				d[2] = 0;
-				d[3] = 255 - s[0];
-				s += sn;
-				d += dn;
-				if (da)
-					d[-1] = sa ? s[-1] : 255;
+				s += 1 + ss + sa;
+				d += ds;
 			}
-			d += d_line_inc;
-			s += s_line_inc;
+
+			if (da)
+			{
+				*d++ = a;
+			}
 		}
+		d += d_line_inc;
+		s += s_line_inc;
 	}
 }
 
@@ -1141,11 +1164,10 @@ static void fast_rgb_to_gray(fz_context *ctx, fz_pixmap *dst, fz_pixmap *src, fz
 	ptrdiff_t s_line_inc = src->stride - w * sn;
 
 	/* If copying spots, they must match, and we can never drop alpha (but we can invent it) */
-	if ((copy_spots && ss != ds) || (!da && sa))
-	{
-		assert("This should never happen" == NULL);
-		fz_throw(ctx, FZ_ERROR_GENERIC, "Cannot convert between incompatible pixmaps");
-	}
+	if (copy_spots && ss != ds)
+		fz_throw(ctx, FZ_ERROR_GENERIC, "incompatible number of spots when converting pixmap");
+	if (!da && sa)
+		fz_throw(ctx, FZ_ERROR_GENERIC, "cannot drop alpha when converting pixmap");
 
 	if ((int)w < 0 || h < 0)
 		return;
@@ -1266,11 +1288,10 @@ static void fast_bgr_to_gray(fz_context *ctx, fz_pixmap *dst, fz_pixmap *src, fz
 	ptrdiff_t s_line_inc = src->stride - w * sn;
 
 	/* If copying spots, they must match, and we can never drop alpha (but we can invent it) */
-	if ((copy_spots && ss != ds) || (!da && sa))
-	{
-		assert("This should never happen" == NULL);
-		fz_throw(ctx, FZ_ERROR_GENERIC, "Cannot convert between incompatible pixmaps");
-	}
+	if (copy_spots && ss != ds)
+		fz_throw(ctx, FZ_ERROR_GENERIC, "incompatible number of spots when converting pixmap");
+	if (!da && sa)
+		fz_throw(ctx, FZ_ERROR_GENERIC, "cannot drop alpha when converting pixmap");
 
 	if ((int)w < 0 || h < 0)
 		return;
@@ -1392,149 +1413,76 @@ static void fast_rgb_to_cmyk(fz_context *ctx, fz_pixmap *dst, fz_pixmap *src, fz
 	int da = dst->alpha;
 	ptrdiff_t d_line_inc = dst->stride - w * dn;
 	ptrdiff_t s_line_inc = src->stride - w * sn;
+	int c, m, y, k, r, g, b;
+	int a = 255;
+	int i;
 
-	/* Spots must match, and we can never drop alpha (but we can invent it) */
-	if ((copy_spots || ss != ds) || (!da && sa))
-	{
-		assert("This should never happen" == NULL);
-		fz_throw(ctx, FZ_ERROR_GENERIC, "Cannot convert between incompatible pixmaps");
-	}
+	if (copy_spots && ss != ds)
+		fz_throw(ctx, FZ_ERROR_GENERIC, "incompatible number of spots when converting pixmap");
 
 	if ((int)w < 0 || h < 0)
-		return;
+		fz_throw(ctx, FZ_ERROR_GENERIC, "integer overflow");
 
-	if (d_line_inc == 0 && s_line_inc == 0)
+	while (h--)
 	{
-		w *= h;
-		h = 1;
-	}
-
-	if (ss == 0 && ds == 0)
-	{
-		/* Common, no spots case */
-		if (da)
+		size_t ww = w;
+		while (ww--)
 		{
+			r = s[0];
+			g = s[1];
+			b = s[2];
+
 			if (sa)
 			{
-				while (h--)
-				{
-					size_t ww = w;
-					while (ww--)
-					{
-						unsigned char c = s[0];
-						unsigned char m = s[1];
-						unsigned char y = s[2];
-						unsigned char k = (unsigned char)fz_mini(c, fz_mini(m, y));
-						d[0] = c - k;
-						d[1] = m - k;
-						d[2] = y - k;
-						d[3] = k;
-						d[4] = s[3];
-						s += 4;
-						d += 5;
-					}
-					d += d_line_inc;
-					s += s_line_inc;
-				}
+				a = s[3+ss];
+				r = fz_div255(r, a);
+				g = fz_div255(g, a);
+				b = fz_div255(b, a);
+			}
+
+			c = 255 - r;
+			m = 255 - g;
+			y = 255 - b;
+			k = fz_mini(c, fz_mini(m, y));
+			c = c - k;
+			m = m - k;
+			y = y - k;
+
+			if (da)
+			{
+				*d++ = fz_mul255(c, a);
+				*d++ = fz_mul255(m, a);
+				*d++ = fz_mul255(y, a);
+				*d++ = fz_mul255(k, a);
 			}
 			else
 			{
-				while (h--)
-				{
-					size_t ww = w;
-					while (ww--)
-					{
-						unsigned char c = s[0];
-						unsigned char m = s[1];
-						unsigned char y = s[2];
-						unsigned char k = (unsigned char)fz_mini(c, fz_mini(m, y));
-						d[0] = c - k;
-						d[1] = m - k;
-						d[2] = y - k;
-						d[3] = k;
-						d[4] = 255;
-						s += 3;
-						d += 5;
-					}
-					d += d_line_inc;
-					s += s_line_inc;
-				}
+				*d++ = c;
+				*d++ = m;
+				*d++ = y;
+				*d++ = k;
 			}
-		}
-		else
-		{
-			while (h--)
+
+			if (copy_spots)
 			{
-				size_t ww = w;
-				while (ww--)
-				{
-					unsigned char c = s[0];
-					unsigned char m = s[1];
-					unsigned char y = s[2];
-					unsigned char k = (unsigned char)fz_mini(c, fz_mini(m, y));
-					d[0] = c - k;
-					d[1] = m - k;
-					d[2] = y - k;
-					d[3] = k;
-					s += 3;
-					d += 4;
-				}
-				d += d_line_inc;
-				s += s_line_inc;
-			}
-		}
-	}
-	else if (copy_spots)
-	{
-		/* Slower, spots capable version */
-		while (h--)
-		{
-			int i;
-			size_t ww = w;
-			while (ww--)
-			{
-				unsigned char c = s[0];
-				unsigned char m = s[1];
-				unsigned char y = s[2];
-				unsigned char k = (unsigned char)fz_mini(c, fz_mini(m, y));
-				d[0] = c - k;
-				d[1] = m - k;
-				d[2] = y - k;
-				d[3] = k;
 				s += 3;
-				d += 4;
-				for (i=ss; i > 0; i--)
+				for (i=ss; i > 0; --i)
 					*d++ = *s++;
-				if (da)
-					*d++ = sa ? *s++ : 255;
+				s += sa;
 			}
-			d += d_line_inc;
-			s += s_line_inc;
-		}
-	}
-	else
-	{
-		while (h--)
-		{
-			size_t ww = w;
-			while (ww--)
+			else
 			{
-				unsigned char c = s[0];
-				unsigned char m = s[1];
-				unsigned char y = s[2];
-				unsigned char k = (unsigned char)(255 - fz_maxi(c, fz_maxi(m, y)));
-				d[0] = c + k;
-				d[1] = m + k;
-				d[2] = y + k;
-				d[3] = 255 - k;
-				s += sn;
-				d += dn;
-				if (da)
-					d[-1] = sa ? s[-1] : 255;
+				s += 3 + ss + sa;
+				d += ds;
 			}
-			d += d_line_inc;
-			s += s_line_inc;
+
+			if (da)
+			{
+				*d++ = a;
+			}
 		}
+		d += d_line_inc;
+		s += s_line_inc;
 	}
 }
 
@@ -1552,149 +1500,76 @@ static void fast_bgr_to_cmyk(fz_context *ctx, fz_pixmap *dst, fz_pixmap *src, fz
 	int da = dst->alpha;
 	ptrdiff_t d_line_inc = dst->stride - w * dn;
 	ptrdiff_t s_line_inc = src->stride - w * sn;
+	int c, m, y, k, r, g, b;
+	int a = 255;
+	int i;
 
-	/* Spots must match, and we can never drop alpha (but we can invent it) */
-	if ((copy_spots && ss != ds) || (!da && sa))
-	{
-		assert("This should never happen" == NULL);
-		fz_throw(ctx, FZ_ERROR_GENERIC, "Cannot convert between incompatible pixmaps");
-	}
+	if (copy_spots && ss != ds)
+		fz_throw(ctx, FZ_ERROR_GENERIC, "incompatible number of spots when converting pixmap");
 
 	if ((int)w < 0 || h < 0)
-		return;
+		fz_throw(ctx, FZ_ERROR_GENERIC, "integer overflow");
 
-	if (d_line_inc == 0 && s_line_inc == 0)
+	while (h--)
 	{
-		w *= h;
-		h = 1;
-	}
-
-	if (ss == 0 && ds == 0)
-	{
-		/* Common, no spots case */
-		if (da)
+		size_t ww = w;
+		while (ww--)
 		{
+			b = s[0];
+			g = s[1];
+			r = s[2];
+
 			if (sa)
 			{
-				while (h--)
-				{
-					size_t ww = w;
-					while (ww--)
-					{
-						unsigned char c = s[2];
-						unsigned char m = s[1];
-						unsigned char y = s[0];
-						unsigned char k = (unsigned char)fz_mini(c, fz_mini(m, y));
-						d[0] = c - k;
-						d[1] = m - k;
-						d[2] = y - k;
-						d[3] = k;
-						d[4] = s[3];
-						s += 4;
-						d += 5;
-					}
-					d += d_line_inc;
-					s += s_line_inc;
-				}
+				a = s[3+ss];
+				r = fz_div255(r, a);
+				g = fz_div255(g, a);
+				b = fz_div255(b, a);
+			}
+
+			c = 255 - r;
+			m = 255 - g;
+			y = 255 - b;
+			k = fz_mini(c, fz_mini(m, y));
+			c = c - k;
+			m = m - k;
+			y = y - k;
+
+			if (da)
+			{
+				*d++ = fz_mul255(c, a);
+				*d++ = fz_mul255(m, a);
+				*d++ = fz_mul255(y, a);
+				*d++ = fz_mul255(k, a);
 			}
 			else
 			{
-				while (h--)
-				{
-					size_t ww = w;
-					while (ww--)
-					{
-						unsigned char c = s[2];
-						unsigned char m = s[1];
-						unsigned char y = s[0];
-						unsigned char k = (unsigned char)fz_mini(c, fz_mini(m, y));
-						d[0] = c - k;
-						d[1] = m - k;
-						d[2] = y - k;
-						d[3] = k;
-						d[4] = 255;
-						s += 3;
-						d += 5;
-					}
-					d += d_line_inc;
-					s += s_line_inc;
-				}
+				*d++ = c;
+				*d++ = m;
+				*d++ = y;
+				*d++ = k;
 			}
-		}
-		else
-		{
-			while (h--)
+
+			if (copy_spots)
 			{
-				size_t ww = w;
-				while (ww--)
-				{
-					unsigned char c = s[2];
-					unsigned char m = s[1];
-					unsigned char y = s[0];
-					unsigned char k = (unsigned char)fz_mini(c, fz_mini(m, y));
-					d[0] = c - k;
-					d[1] = m - k;
-					d[2] = y - k;
-					d[3] = k;
-					s += 3;
-					d += 4;
-				}
-				d += d_line_inc;
-				s += s_line_inc;
-			}
-		}
-	}
-	else if (copy_spots)
-	{
-		/* Slower, spots capable version */
-		while (h--)
-		{
-			int i;
-			size_t ww = w;
-			while (ww--)
-			{
-				unsigned char c = s[2];
-				unsigned char m = s[1];
-				unsigned char y = s[0];
-				unsigned char k = (unsigned char)fz_mini(c, fz_mini(m, y));
-				d[0] = c - k;
-				d[1] = m - k;
-				d[2] = y - k;
-				d[3] = k;
 				s += 3;
-				d += 4;
-				for (i=ss; i > 0; i--)
+				for (i=ss; i > 0; --i)
 					*d++ = *s++;
-				if (da)
-					*d++ = sa ? *s++ : 255;
+				s += sa;
 			}
-			d += d_line_inc;
-			s += s_line_inc;
-		}
-	}
-	else
-	{
-		while (h--)
-		{
-			size_t ww = w;
-			while (ww--)
+			else
 			{
-				unsigned char c = s[2];
-				unsigned char m = s[1];
-				unsigned char y = s[0];
-				unsigned char k = (unsigned char)(255 - fz_maxi(c, fz_maxi(m, y)));
-				d[0] = c + k;
-				d[1] = m + k;
-				d[2] = y + k;
-				d[3] = 255 - k;
-				s += sn;
-				d += dn;
-				if (da)
-					d[-1] = sa ? s[-1] : 255;
+				s += 3 + ss + sa;
+				d += ds;
 			}
-			d += d_line_inc;
-			s += s_line_inc;
+
+			if (da)
+			{
+				*d++ = a;
+			}
 		}
+		d += d_line_inc;
+		s += s_line_inc;
 	}
 }
 
@@ -1712,457 +1587,67 @@ static void fast_cmyk_to_gray(fz_context *ctx, fz_pixmap *dst, fz_pixmap *src, f
 	int da = dst->alpha;
 	ptrdiff_t d_line_inc = dst->stride - w * dn;
 	ptrdiff_t s_line_inc = src->stride - w * sn;
+	int c, m, y, k, g;
+	int a = 255;
+	int i;
 
-	/* Spots must match, and we can never drop alpha (but we can invent it) */
-	if ((copy_spots && ss != ds) || (!da && sa))
-	{
-		assert("This should never happen" == NULL);
-		fz_throw(ctx, FZ_ERROR_GENERIC, "Cannot convert between incompatible pixmaps");
-	}
+	if (copy_spots && ss != ds)
+		fz_throw(ctx, FZ_ERROR_GENERIC, "incompatible number of spots when converting pixmap");
 
 	if ((int)w < 0 || h < 0)
-		return;
+		fz_throw(ctx, FZ_ERROR_GENERIC, "integer overflow");
 
-	if (d_line_inc == 0 && s_line_inc == 0)
+	while (h--)
 	{
-		w *= h;
-		h = 1;
-	}
-
-	if (ss == 0 && ds == 0)
-	{
-		/* Common, no spots case */
-		if (da)
+		size_t ww = w;
+		while (ww--)
 		{
+			c = s[0];
+			m = s[1];
+			y = s[2];
+			k = s[3];
+
 			if (sa)
 			{
-				while (h--)
-				{
-					size_t ww = w;
-					while (ww--)
-					{
-						unsigned char c = fz_mul255(s[0], 77);
-						unsigned char m = fz_mul255(s[1], 150);
-						unsigned char y = fz_mul255(s[2], 28);
-						d[0] = 255 - (unsigned char)fz_mini(c + m + y + s[3], 255);
-						d[1] = s[4];
-						s += 5;
-						d += 2;
-					}
-					d += d_line_inc;
-					s += s_line_inc;
-				}
+				a = s[4+ss];
+				c = fz_div255(c, a);
+				m = fz_div255(m, a);
+				y = fz_div255(y, a);
+				k = fz_div255(k, a);
+			}
+
+			g = 255 - fz_mini(c + m + y + k, 255);
+
+			if (da)
+			{
+				*d++ = fz_mul255(g, a);
 			}
 			else
 			{
-				while (h--)
-				{
-					size_t ww = w;
-					while (ww--)
-					{
-						unsigned char c = fz_mul255(s[0], 77);
-						unsigned char m = fz_mul255(s[1], 150);
-						unsigned char y = fz_mul255(s[2], 28);
-						d[0] = 255 - (unsigned char)fz_mini(c + m + y + s[3], 255);
-						d[1] = 255;
-						s += 3;
-						d += 2;
-					}
-					d += d_line_inc;
-					s += s_line_inc;
-				}
+				*d++ = g;
 			}
-		}
-		else
-		{
-			while (h--)
+
+			if (copy_spots)
 			{
-				size_t ww = w;
-				while (ww--)
-				{
-					unsigned char c = fz_mul255(s[0], 77);
-					unsigned char m = fz_mul255(s[1], 150);
-					unsigned char y = fz_mul255(s[2], 28);
-					d[0] = 255 - (unsigned char)fz_mini(c + m + y + s[3], 255);
-					s += 4;
-					d++;
-				}
-				d += d_line_inc;
-				s += s_line_inc;
-			}
-		}
-	}
-	else if (copy_spots)
-	{
-		/* Slower, spots capable version */
-		while (h--)
-		{
-			int i;
-			size_t ww = w;
-			while (ww--)
-			{
-				unsigned char c = fz_mul255(s[0], 77);
-				unsigned char m = fz_mul255(s[1], 150);
-				unsigned char y = fz_mul255(s[2], 28);
-				d[0] = 255 - (unsigned char)fz_mini(c + m + y + s[3], 255);
 				s += 4;
-				d++;
-				for (i=ss; i > 0; i--)
+				for (i=ss; i > 0; --i)
 					*d++ = *s++;
-				if (da)
-					*d++ = sa ? *s++ : 255;
+				s += sa;
 			}
-			d += d_line_inc;
-			s += s_line_inc;
-		}
-	}
-	else
-	{
-		while (h--)
-		{
-			size_t ww = w;
-			while (ww--)
+			else
 			{
-				unsigned char c = fz_mul255(255 - s[0], 77);
-				unsigned char m = fz_mul255(255 - s[1], 150);
-				unsigned char y = fz_mul255(255 - s[2], 28);
-				d[0] = (unsigned char)fz_maxi(s[3] - c - m - y, 0);
-				s += sn;
-				d += dn;
-				if (da)
-					d[-1] = sa ? s[-1] : 255;
+				s += 4 + ss + sa;
+				d += ds;
 			}
-			d += d_line_inc;
-			s += s_line_inc;
+
+			if (da)
+			{
+				*d++ = a;
+			}
 		}
+		d += d_line_inc;
+		s += s_line_inc;
 	}
-}
-
-#ifdef ARCH_ARM
-static void
-fast_cmyk_to_rgb_ARM(unsigned char *dst, unsigned char *src, int n)
-__attribute__((naked));
-
-static void
-fast_cmyk_to_rgb_ARM(unsigned char *dst, unsigned char *src, int n)
-{
-	asm volatile(
-	ENTER_ARM
-	"stmfd	r13!,{r4-r11,r14}					\n"
-	"@ r0 = dst							\n"
-	"@ r1 = src							\n"
-	"@ r2 = n							\n"
-	"mov	r12, #0			@ r12= CMYK = 0			\n"
-	"b	2f			@ enter loop			\n"
-	"1:				@ White or Black		\n"
-	"@ Cunning trick: On entry r11 = 0 if black, r11 = FF if white	\n"
-	"eor    r12,r11,#0xFF           @ r12= FF if black, 0 if white  \n"
-	"ldrb	r7, [r1],#1		@ r8 = s[4]			\n"
-	"strb	r11,[r0],#1		@ d[0] = r			\n"
-	"strb	r11,[r0],#1		@ d[1] = g			\n"
-	"strb	r11,[r0],#1		@ d[2] = b			\n"
-	"strb	r7, [r0],#1		@ d[3] = s[4]			\n"
-	"mov    r12,r12,LSL #24         @ r12 = CMYK                    \n"
-	"subs	r2, r2, #1		@ r2 = n--			\n"
-	"beq	9f							\n"
-	"2:				@ Main loop starts here		\n"
-	"ldrb	r3, [r1], #4		@ r3 = c			\n"
-	"ldrb	r6, [r1, #-1]		@ r6 = k			\n"
-	"ldrb	r5, [r1, #-2]		@ r5 = y			\n"
-	"ldrb	r4, [r1, #-3]		@ r4 = m			\n"
-	"eors	r11,r6, #0xFF		@ if (k == 255)			\n"
-	"beq	1b			@   goto black			\n"
-	"orr	r7, r3, r4, LSL #8					\n"
-	"orr	r14,r5, r6, LSL #8					\n"
-	"orrs	r7, r7, r14,LSL #16	@ r7 = cmyk			\n"
-	"beq	1b			@ if (cmyk == 0) white		\n"
-	"@ At this point, we have to decode a new pixel			\n"
-	"@ r0 = dst  r1 = src  r2 = n  r7 = cmyk			\n"
-	"3:				@ unmatched			\n"
-	"stmfd	r13!,{r0-r1,r7}		@ stash regs for space		\n"
-	"add	r3, r3, r3, LSR #7	@ r3 = c += c>>7		\n"
-	"add	r4, r4, r4, LSR #7	@ r4 = m += m>>7		\n"
-	"add	r5, r5, r5, LSR #7	@ r5 = y += y>>7		\n"
-	"add	r6, r6, r6, LSR #7	@ r6 = k += k>>7		\n"
-	"mov	r5, r5, LSR #1		@ sacrifice 1 bit of Y		\n"
-	"mul	r8, r3, r4		@ r8 = cm     = c * m		\n"
-	"rsb	r9, r8, r4, LSL #8	@ r9 = c1m    = (m<<8) - cm	\n"
-	"rsb	r3, r8, r3, LSL #8	@ r3 = cm1    = (c<<8) - cm	\n"
-	"rsb	r4, r4, #0x100		@ r4 = 256-m			\n"
-	"rsb	r4, r3, r4, LSL #8	@ r4 = c1m1   =((256-m)<<8)-cm1	\n"
-	"mul	r7, r4, r5		@ r7 = c1m1y  = c1m1 * y	\n"
-	"rsb	r4, r7, r4, LSL #7	@ r4 = c1m1y1 = (c1m1<<7)-c1m1y	\n"
-	"mul	r10,r9, r5		@ r10= c1my   = c1m * y		\n"
-	"rsb	r9, r10,r9, LSL #7	@ r9 = c1my1  = (c1m<<7) - c1my \n"
-	"mul	r11,r3, r5		@ r11= cm1y   = cm1 * y		\n"
-	"rsb	r3, r11,r3, LSL #7	@ r3 = cm1y1  = (cm1<<7) - cm1y	\n"
-	"mul	r5, r8, r5		@ r5 = cmy    = cm * y		\n"
-	"rsb	r8, r5, r8, LSL #7	@ r8 = cmy1   = (cm<<7) - cmy	\n"
-	"@ Register recap:						\n"
-	"@ r3 = cm1y1							\n"
-	"@ r4 = c1m1y1							\n"
-	"@ r5 = cmy							\n"
-	"@ r6 = k							\n"
-	"@ r7 = c1m1y							\n"
-	"@ r8 = cmy1							\n"
-	"@ r9 = c1my1							\n"
-	"@ r10= c1my							\n"
-	"@ r11= cm1y							\n"
-	"@ The actual matrix multiplication				\n"
-	"mul	r14,r4, r6		@ r14= x1 = c1m1y1 * k		\n"
-	"rsb	r4, r14,r4, LSL #8	@ r4 = x0 = (c1m1y1<<8) - x1	\n"
-	"add	r4, r4, r14,LSR #8-5	@ r4 = b = x0 + 32*(x1>>8)	\n"
-	"sub	r1, r4, r14,LSR #8	@ r1 = g = x0 + 31*(x1>>8)	\n"
-	"add	r0, r1, r14,LSR #8-2	@ r0 = r = x0 + 35*(x1>>8)	\n"
-	"								\n"
-	"mul	r14,r7, r6		@ r14= x1 = c1m1y * k		\n"
-	"rsb	r7, r14,r7, LSL #8	@ r7 = x0 = (c1m1y<<8) - x1	\n"
-	"add	r0, r0, r7		@ r0 = r += x0			\n"
-	"add	r1, r1, r7		@ r1 = g += (x0>>8 * 256)	\n"
-	"sub	r1, r1, r7, LSR #8-3	@                    248	\n"
-	"sub	r1, r1, r7, LSR #8-2	@                    244	\n"
-	"sub	r1, r1, r7, LSR #8	@                    243	\n"
-	"sub	r7, r14,r14,LSR #3	@ r7 = 28*(x1>>5)		\n"
-	"add	r0, r0, r7, LSR #8-5	@ r0 = r += 28 * x1		\n"
-	"sub	r7, r7, r14,LSR #4	@ r7 = 26*(x1>>5)		\n"
-	"add	r1, r1, r7, LSR #8-5	@ r1 = g += 26 * x1		\n"
-	"								\n"
-	"mul	r14,r9, r6		@ r14= x1 = c1my1 * k		\n"
-	"sub	r9, r9, r14,LSR #8	@ r9 = x0>>8 = c1my1 - (x1>>8)	\n"
-	"add	r0, r0, r14,LSR #8-5	@ r0 = r += (x1>>8)*32		\n"
-	"add	r0, r0, r14,LSR #8-2	@ r0 = r += (x1>>8)*36		\n"
-	"mov	r14,#237		@ r14= 237			\n"
-	"mla	r0,r14,r9,r0		@ r14= r += x0*237		\n"
-	"mov	r14,#141		@ r14= 141			\n"
-	"mla	r4,r14,r9,r4		@ r14= b += x0*141		\n"
-	"								\n"
-	"mul	r14,r10,r6		@ r14= x1 = c1my * k		\n"
-	"sub	r10,r10,r14,LSR #8	@ r10= x0>>8 = c1my - (x1>>8)	\n"
-	"add	r0, r0, r14,LSR #8-5	@ r0 = r += 32 * x1		\n"
-	"add	r0, r0, r14,LSR #8-1	@ r0 = r += 34 * x1		\n"
-	"mov	r14,#238		@ r14= 238			\n"
-	"mla	r0,r14,r10,r0		@ r0 = r += 238 * x0		\n"
-	"mov	r14,#28			@ r14= 28			\n"
-	"mla	r1,r14,r10,r1		@ r1 = g += 28 * x0		\n"
-	"mov	r14,#36			@ r14= 36			\n"
-	"mla	r4,r14,r10,r4		@ r4 = b += 36 * x0		\n"
-	"								\n"
-	"mul	r14,r3, r6		@ r14= x1 = cm1y1 * k		\n"
-	"sub	r3, r3, r14,LSR #8	@ r3 = x1>>8 = cm1y1 - (x1>>8)	\n"
-	"add	r1, r1, r14,LSR #8-4	@ r1 = g += 16*x1		\n"
-	"sub	r1, r1, r14,LSR #8	@           15*x1		\n"
-	"add	r4, r4, r14,LSR #8-5	@ r4 = b += 32*x1		\n"
-	"add	r4, r4, r14,LSR #8-2	@           36*x1		\n"
-	"mov	r14,#174		@ r14= 174			\n"
-	"mla	r1, r14,r3, r1		@ r1 = g += 174 * x0		\n"
-	"mov	r14,#240		@ r14= 240			\n"
-	"mla	r4, r14,r3, r4		@ r4 = b += 240 * x0		\n"
-	"								\n"
-	"mul	r14,r11,r6		@ r14= x1 = cm1y * k		\n"
-	"sub	r11,r11,r14,LSR #8	@ r11= x0>>8 = cm1y - (x1>>8)	\n"
-	"add	r1, r1, r14,LSR #8-4	@ r1 = g += x1 * 16		\n"
-	"add	r1, r1, r14,LSR #8	@           x1 * 17		\n"
-	"add	r1, r1, r14,LSR #8-1	@           x1 * 19		\n"
-	"mov	r14,#167		@ r14 = 167			\n"
-	"mla	r1, r14,r11,r1		@ r1 = g += 167 * x0		\n"
-	"mov	r14,#80			@ r14 = 80			\n"
-	"mla	r4, r14,r11,r4		@ r4 = b += 80 * x0		\n"
-	"								\n"
-	"mul	r14,r8, r6		@ r14= x1 = cmy1 * k		\n"
-	"sub	r8, r8, r14,LSR #8	@ r8 = x0>>8 = cmy1 - (x1>>8)	\n"
-	"add	r4, r4, r14,LSR #8-1	@ r4 = b += x1 * 2		\n"
-	"mov	r14,#46			@ r14=46			\n"
-	"mla	r0, r14,r8, r0		@ r0 = r += 46 * x0		\n"
-	"mov	r14,#49			@ r14=49			\n"
-	"mla	r1, r14,r8, r1		@ r1 = g += 49 * x0		\n"
-	"mov	r14,#147		@ r14=147			\n"
-	"mla	r4, r14,r8, r4		@ r4 = b += 147 * x0		\n"
-	"								\n"
-	"rsb	r6, r6, #256		@ r6 = k = 256-k		\n"
-	"mul	r14,r5, r6		@ r14= x0 = cmy * (256-k)	\n"
-	"mov	r11,#54			@ r11= 54			\n"
-	"mov	r14,r14,LSR #8		@ r14= (x0>>8)			\n"
-	"mov	r8,#57			@ r8 = 57			\n"
-	"mla	r0,r14,r11,r0		@ r0 = r += 54*x0		\n"
-	"mla	r1,r14,r11,r1		@ r1 = g += 54*x0		\n"
-	"mla	r4,r14,r8, r4		@ r4 = b += 57*x0		\n"
-	"								\n"
-	"sub	r8, r0, r0, LSR #8	@ r8 = r -= (r>>8)		\n"
-	"sub	r9, r1, r1, LSR #8	@ r9 = g -= (r>>8)		\n"
-	"sub	r10,r4, r4, LSR #8	@ r10= b -= (r>>8)		\n"
-	"ldmfd	r13!,{r0-r1,r12}					\n"
-	"mov	r8, r8, LSR #23		@ r8 = r>>23			\n"
-	"mov	r9, r9, LSR #23		@ r9 = g>>23			\n"
-	"mov	r10,r10,LSR #23		@ r10= b>>23			\n"
-	"ldrb	r14,[r1],#1		@ r8 = s[4]			\n"
-	"strb	r8, [r0],#1		@ d[0] = r			\n"
-	"strb	r9, [r0],#1		@ d[1] = g			\n"
-	"strb	r10,[r0],#1		@ d[2] = b			\n"
-	"strb	r14,[r0],#1		@ d[3] = s[4]			\n"
-	"subs	r2, r2, #1		@ r2 = n--			\n"
-	"beq	9f							\n"
-	"@ At this point, we've just decoded a pixel			\n"
-	"@ r0 = dst  r1 = src  r2 = n  r8 = r  r9 = g  r10= b r12= CMYK \n"
-	"4:								\n"
-	"ldrb	r3, [r1], #4		@ r3 = c			\n"
-	"ldrb	r6, [r1, #-1]		@ r6 = k			\n"
-	"ldrb	r5, [r1, #-2]		@ r5 = y			\n"
-	"ldrb	r4, [r1, #-3]		@ r4 = m			\n"
-	"eors	r11,r6, #0xFF		@ if (k == 255)			\n"
-	"beq	1b			@   goto black			\n"
-	"orr	r7, r3, r4, LSL #8					\n"
-	"orr	r14,r5, r6, LSL #8					\n"
-	"orrs	r7, r7, r14,LSL #16	@ r7 = cmyk			\n"
-	"beq	1b			@ if (cmyk == 0) white		\n"
-	"cmp	r7, r12			@ if (cmyk != CMYK)		\n"
-	"bne	3b			@   not the same, loop		\n"
-	"@ If we get here, we just matched a pixel we have just decoded \n"
-	"ldrb	r3, [r1],#1		@ r8 = s[4]			\n"
-	"strb	r8, [r0],#1		@ d[0] = r			\n"
-	"strb	r9, [r0],#1		@ d[1] = g			\n"
-	"strb	r10,[r0],#1		@ d[2] = b			\n"
-	"strb	r3, [r0],#1		@ d[3] = s[4]			\n"
-	"subs	r2, r2, #1		@ r2 = n--			\n"
-	"bne	4b							\n"
-	"9:								\n"
-	"ldmfd	r13!,{r4-r11,PC}	@ pop, return to thumb		\n"
-	ENTER_THUMB
-	);
-}
-#endif
-
-static inline void cached_cmyk_conv(unsigned char *restrict const pr, unsigned char *restrict const pg, unsigned char *restrict const pb,
-				unsigned int *restrict const C, unsigned int *restrict const M, unsigned int *restrict const Y, unsigned int *restrict const K,
-				unsigned int c, unsigned int m, unsigned int y, unsigned int k)
-{
-#ifdef SLOWCMYK
-	unsigned int r, g, b;
-	unsigned int cm, c1m, cm1, c1m1, c1m1y, c1m1y1, c1my, c1my1, cm1y, cm1y1, cmy, cmy1;
-	unsigned int x0, x1;
-
-	if (c == *C && m == *M && y == *Y && k == *K)
-	{
-		/* Nothing to do */
-	}
-	else if (k == 0 && c == 0 && m == 0 && y == 0)
-	{
-		*C = 0;
-		*M = 0;
-		*Y = 0;
-		*K = 0;
-		*pr = *pg = *pb = 255;
-	}
-	else if (k == 255)
-	{
-		*C = 0;
-		*M = 0;
-		*Y = 0;
-		*K = 255;
-		*pr = *pg = *pb = 0;
-	}
-	else
-	{
-		*C = c;
-		*M = m;
-		*Y = y;
-		*K = k;
-		c += c>>7;
-		m += m>>7;
-		y += y>>7;
-		k += k>>7;
-		y >>= 1; /* Ditch 1 bit of Y to avoid overflow */
-		cm = c * m;
-		c1m = (m<<8) - cm;
-		cm1 = (c<<8) - cm;
-		c1m1 = ((256 - m)<<8) - cm1;
-		c1m1y = c1m1 * y;
-		c1m1y1 = (c1m1<<7) - c1m1y;
-		c1my = c1m * y;
-		c1my1 = (c1m<<7) - c1my;
-		cm1y = cm1 * y;
-		cm1y1 = (cm1<<7) - cm1y;
-		cmy = cm * y;
-		cmy1 = (cm<<7) - cmy;
-
-		/* this is a matrix multiplication, unrolled for performance */
-		x1 = c1m1y1 * k;	/* 0 0 0 1 */
-		x0 = (c1m1y1<<8) - x1;	/* 0 0 0 0 */
-		x1 = x1>>8;		/* From 23 fractional bits to 15 */
-		r = g = b = x0;
-		r += 35 * x1;	/* 0.1373f */
-		g += 31 * x1;	/* 0.1216f */
-		b += 32 * x1;	/* 0.1255f */
-
-		x1 = c1m1y * k;		/* 0 0 1 1 */
-		x0 = (c1m1y<<8) - x1;	/* 0 0 1 0 */
-		x1 >>= 8;		/* From 23 fractional bits to 15 */
-		r += 28 * x1;	/* 0.1098f */
-		g += 26 * x1;	/* 0.1020f */
-		r += x0;
-		x0 >>= 8;		/* From 23 fractional bits to 15 */
-		g += 243 * x0;	/* 0.9490f */
-
-		x1 = c1my1 * k;		/* 0 1 0 1 */
-		x0 = (c1my1<<8) - x1;	/* 0 1 0 0 */
-		x1 >>= 8;		/* From 23 fractional bits to 15 */
-		x0 >>= 8;		/* From 23 fractional bits to 15 */
-		r += 36 * x1;	/* 0.1412f */
-		r += 237 * x0;	/* 0.9255f */
-		b += 141 * x0;	/* 0.5490f */
-
-		x1 = c1my * k;		/* 0 1 1 1 */
-		x0 = (c1my<<8) - x1;	/* 0 1 1 0 */
-		x1 >>= 8;		/* From 23 fractional bits to 15 */
-		x0 >>= 8;		/* From 23 fractional bits to 15 */
-		r += 34 * x1;	/* 0.1333f */
-		r += 238 * x0;	/* 0.9294f */
-		g += 28 * x0;	/* 0.1098f */
-		b += 36 * x0;	/* 0.1412f */
-
-		x1 = cm1y1 * k;		/* 1 0 0 1 */
-		x0 = (cm1y1<<8) - x1;	/* 1 0 0 0 */
-		x1 >>= 8;		/* From 23 fractional bits to 15 */
-		x0 >>= 8;		/* From 23 fractional bits to 15 */
-		g += 15 * x1;	/* 0.0588f */
-		b += 36 * x1;	/* 0.1412f */
-		g += 174 * x0;	/* 0.6784f */
-		b += 240 * x0;	/* 0.9373f */
-
-		x1 = cm1y * k;		/* 1 0 1 1 */
-		x0 = (cm1y<<8) - x1;	/* 1 0 1 0 */
-		x1 >>= 8;		/* From 23 fractional bits to 15 */
-		x0 >>= 8;		/* From 23 fractional bits to 15 */
-		g += 19 * x1;	/* 0.0745f */
-		g += 167 * x0;	/* 0.6510f */
-		b += 80 * x0;	/* 0.3137f */
-
-		x1 = cmy1 * k;		/* 1 1 0 1 */
-		x0 = (cmy1<<8) - x1;	/* 1 1 0 0 */
-		x1 >>= 8;		/* From 23 fractional bits to 15 */
-		x0 >>= 8;		/* From 23 fractional bits to 15 */
-		b += 2 * x1;	/* 0.0078f */
-		r += 46 * x0;	/* 0.1804f */
-		g += 49 * x0;	/* 0.1922f */
-		b += 147 * x0;	/* 0.5725f */
-
-		x0 = cmy * (256-k);	/* 1 1 1 0 */
-		x0 >>= 8;		/* From 23 fractional bits to 15 */
-		r += 54 * x0;	/* 0.2118f */
-		g += 54 * x0;	/* 0.2119f */
-		b += 57 * x0;	/* 0.2235f */
-
-		r -= (r>>8);
-		g -= (g>>8);
-		b -= (b>>8);
-		*pr = r>>23;
-		*pg = g>>23;
-		*pb = b>>23;
-	}
-#else
-	*pr = 255 - (unsigned char)fz_mini(c + k, 255);
-	*pg = 255 - (unsigned char)fz_mini(m + k, 255);
-	*pb = 255 - (unsigned char)fz_mini(y + k, 255);
-#endif
 }
 
 static void fast_cmyk_to_rgb(fz_context *ctx, fz_pixmap *dst, fz_pixmap *src, fz_colorspace *prf, const fz_default_colorspaces *default_cs, const fz_color_params *color_params, int copy_spots)
@@ -2179,147 +1664,72 @@ static void fast_cmyk_to_rgb(fz_context *ctx, fz_pixmap *dst, fz_pixmap *src, fz
 	int da = dst->alpha;
 	ptrdiff_t d_line_inc = dst->stride - w * dn;
 	ptrdiff_t s_line_inc = src->stride - w * sn;
-	unsigned int C,M,Y,K;
-	unsigned char r,g,b;
+	int c, m, y, k, r, g, b;
+	int a = 255;
+	int i;
 
-	/* Spots must match, and we can never drop alpha (but we can invent it) */
-	if ((copy_spots && ss != ds) || (!da && sa))
-	{
-		assert("This should never happen" == NULL);
-		fz_throw(ctx, FZ_ERROR_GENERIC, "Cannot convert between incompatible pixmaps");
-	}
+	if (copy_spots && ss != ds)
+		fz_throw(ctx, FZ_ERROR_GENERIC, "incompatible number of spots when converting pixmap");
 
 	if ((int)w < 0 || h < 0)
-		return;
+		fz_throw(ctx, FZ_ERROR_GENERIC, "integer overflow");
 
-	C = 0;
-	M = 0;
-	Y = 0;
-	K = 0;
-	r = 255;
-	g = 255;
-	b = 255;
-
-	if (d_line_inc == 0 && s_line_inc == 0)
+	while (h--)
 	{
-		w *= h;
-		h = 1;
-	}
-
-	if (ss == 0 && ds == 0)
-	{
-		/* Common, no spots case */
-		if (da)
+		size_t ww = w;
+		while (ww--)
 		{
+			c = s[0];
+			m = s[1];
+			y = s[2];
+			k = s[3];
+
 			if (sa)
 			{
-#ifdef ARCH_ARM
-				if (h == 1)
-				{
-					fast_cmyk_to_rgb_ARM(d, s, w);
-					return;
-				}
-#endif
-				while (h--)
-				{
-					size_t ww = w;
-					while (ww--)
-					{
-						cached_cmyk_conv(&r, &g, &b, &C, &M, &Y, &K, s[0], s[1], s[2], s[3]);
-						d[0] = r;
-						d[1] = g;
-						d[2] = b;
-						d[3] = s[4];
-						s += 5;
-						d += 4;
-					}
-					d += d_line_inc;
-					s += s_line_inc;
-				}
+				a = s[4+ss];
+				c = fz_div255(c, a);
+				m = fz_div255(m, a);
+				y = fz_div255(y, a);
+				k = fz_div255(k, a);
+			}
+
+			r = 255 - fz_mini(c + k, 255);
+			g = 255 - fz_mini(m + k, 255);
+			b = 255 - fz_mini(y + k, 255);
+
+			if (da)
+			{
+				*d++ = fz_mul255(r, a);
+				*d++ = fz_mul255(g, a);
+				*d++ = fz_mul255(b, a);
 			}
 			else
 			{
-				while (h--)
-				{
-					size_t ww = w;
-					while (ww--)
-					{
-						cached_cmyk_conv(&r, &g, &b, &C, &M, &Y, &K, s[0], s[1], s[2], s[3]);
-						d[0] = r;
-						d[1] = g;
-						d[2] = b;
-						d[3] = 255;
-						s += 4;
-						d += 4;
-					}
-					d += d_line_inc;
-					s += s_line_inc;
-				}
+				*d++ = r;
+				*d++ = g;
+				*d++ = b;
 			}
-		}
-		else
-		{
-			while (h--)
+
+			if (copy_spots)
 			{
-				size_t ww = w;
-				while (ww--)
-				{
-					cached_cmyk_conv(&r, &g, &b, &C, &M, &Y, &K, s[0], s[1], s[2], s[3]);
-					d[0] = r;
-					d[1] = g;
-					d[2] = b;
-					s += 4;
-					d += 3;
-				}
-				d += d_line_inc;
-				s += s_line_inc;
-			}
-		}
-	}
-	else if (copy_spots)
-	{
-		/* Slower, spots capable version */
-		while (h--)
-		{
-			int i;
-			size_t ww = w;
-			while (ww--)
-			{
-				cached_cmyk_conv(&r, &g, &b, &C, &M, &Y, &K, s[0], s[1], s[2], s[3]);
-				d[0] = r;
-				d[1] = g;
-				d[2] = b;
 				s += 4;
-				d += 3;
-				for (i=ss; i > 0; i--)
+				for (i=ss; i > 0; --i)
 					*d++ = *s++;
-				if (da)
-					*d++ = sa ? *s++ : 255;
+				s += sa;
 			}
-			d += d_line_inc;
-			s += s_line_inc;
-		}
-	}
-	else
-	{
-		/* Slower, spots capable version */
-		while (h--)
-		{
-			size_t ww = w;
-			while (ww--)
+			else
 			{
-				cached_cmyk_conv(&r, &g, &b, &C, &M, &Y, &K, s[0], s[1], s[2], s[3]);
-				d[0] = r;
-				d[1] = g;
-				d[2] = b;
-				s += sn;
-				d += dn;
-				if (da)
-					d[-1] = sa ? s[-1] : 255;
+				s += 4 + ss + sa;
+				d += ds;
 			}
-			d += d_line_inc;
-			s += s_line_inc;
+
+			if (da)
+			{
+				*d++ = a;
+			}
 		}
+		d += d_line_inc;
+		s += s_line_inc;
 	}
 }
 
@@ -2337,143 +1747,72 @@ static void fast_cmyk_to_bgr(fz_context *ctx, fz_pixmap *dst, fz_pixmap *src, fz
 	int da = dst->alpha;
 	ptrdiff_t d_line_inc = dst->stride - w * dn;
 	ptrdiff_t s_line_inc = src->stride - w * sn;
-	unsigned int C,M,Y,K;
-	unsigned char r,g,b;
+	int c, m, y, k, r, g, b;
+	int a = 255;
+	int i;
 
-	/* Spots must match, and we can never drop alpha (but we can invent it) */
-	if ((copy_spots && ss != ds) || (!da && sa))
-	{
-		assert("This should never happen" == NULL);
-		fz_throw(ctx, FZ_ERROR_GENERIC, "Cannot convert between incompatible pixmaps");
-	}
+	if (copy_spots && ss != ds)
+		fz_throw(ctx, FZ_ERROR_GENERIC, "incompatible number of spots when converting pixmap");
 
 	if ((int)w < 0 || h < 0)
-		return;
+		fz_throw(ctx, FZ_ERROR_GENERIC, "integer overflow");
 
-	C = 0;
-	M = 0;
-	Y = 0;
-	K = 0;
-	r = 255;
-	g = 255;
-	b = 255;
-
-	if (d_line_inc == 0 && s_line_inc == 0)
+	while (h--)
 	{
-		w *= h;
-		h = 1;
-	}
-
-	if (ss == 0 && ds == 0)
-	{
-		/* Common, no spots case */
-		if (da)
+		size_t ww = w;
+		while (ww--)
 		{
+			c = s[0];
+			m = s[1];
+			y = s[2];
+			k = s[3];
+
 			if (sa)
 			{
-				while (h--)
-				{
-					size_t ww = w;
-					while (ww--)
-					{
-						cached_cmyk_conv(&r, &g, &b, &C, &M, &Y, &K, s[0], s[1], s[2], s[3]);
-						d[0] = b;
-						d[1] = g;
-						d[2] = r;
-						d[3] = s[4];
-						s += 5;
-						d += 4;
-					}
-					d += d_line_inc;
-					s += s_line_inc;
-				}
+				a = s[4+ss];
+				c = fz_div255(c, a);
+				m = fz_div255(m, a);
+				y = fz_div255(y, a);
+				k = fz_div255(k, a);
+			}
+
+			r = 255 - fz_mini(c + k, 255);
+			g = 255 - fz_mini(m + k, 255);
+			b = 255 - fz_mini(y + k, 255);
+
+			if (da)
+			{
+				*d++ = fz_mul255(b, a);
+				*d++ = fz_mul255(g, a);
+				*d++ = fz_mul255(r, a);
 			}
 			else
 			{
-				while (h--)
-				{
-					size_t ww = w;
-					while (ww--)
-					{
-						cached_cmyk_conv(&r, &g, &b, &C, &M, &Y, &K, s[0], s[1], s[2], s[3]);
-						d[0] = b;
-						d[1] = g;
-						d[2] = r;
-						d[3] = 255;
-						s += 4;
-						d += 4;
-					}
-					d += d_line_inc;
-					s += s_line_inc;
-				}
+				*d++ = b;
+				*d++ = g;
+				*d++ = r;
 			}
-		}
-		else
-		{
-			/* We shouldn't lose alpha */
-			assert(src->alpha == 0);
 
-			while (h--)
+			if (copy_spots)
 			{
-				size_t ww = w;
-				while (ww--)
-				{
-					cached_cmyk_conv(&r, &g, &b, &C, &M, &Y, &K, s[0], s[1], s[2], s[3]);
-					d[0] = b;
-					d[1] = g;
-					d[2] = r;
-					s += 4;
-					d += 3;
-				}
-				d += d_line_inc;
-				s += s_line_inc;
-			}
-		}
-	}
-	else if (copy_spots)
-	{
-		/* Slower, spots capable version */
-		while (h--)
-		{
-			int i;
-			size_t ww = w;
-			while (ww--)
-			{
-				cached_cmyk_conv(&r, &g, &b, &C, &M, &Y, &K, s[0], s[1], s[2], s[3]);
-				d[0] = b;
-				d[1] = g;
-				d[2] = r;
 				s += 4;
-				d += 3;
-				for (i=ss; i > 0; i--)
+				for (i=ss; i > 0; --i)
 					*d++ = *s++;
-				if (da)
-					*d++ = sa ? *s++ : 255;
+				s += sa;
 			}
-			d += d_line_inc;
-			s += s_line_inc;
-		}
-	}
-	else
-	{
-		/* Slower, spots capable version */
-		while (h--)
-		{
-			size_t ww = w;
-			while (ww--)
+			else
 			{
-				cached_cmyk_conv(&r, &g, &b, &C, &M, &Y, &K, s[0], s[1], s[2], s[3]);
-				d[0] = b;
-				d[1] = g;
-				d[2] = r;
-				s += sn;
-				d += dn;
-				if (da)
-					d[-1] = sa ? s[-1] : 255;
+				s += 4 + ss + sa;
+				d += ds;
 			}
-			d += d_line_inc;
-			s += s_line_inc;
+
+			if (da)
+			{
+				*d++ = a;
+			}
 		}
+		d += d_line_inc;
+		s += s_line_inc;
 	}
 }
 
@@ -2493,11 +1832,10 @@ static void fast_rgb_to_bgr(fz_context *ctx, fz_pixmap *dst, fz_pixmap *src, fz_
 	ptrdiff_t s_line_inc = src->stride - w * sn;
 
 	/* If copying spots, they must match, and we can never drop alpha (but we can invent it) */
-	if ((copy_spots && ss != ds) || (!da && sa))
-	{
-		assert("This should never happen" == NULL);
-		fz_throw(ctx, FZ_ERROR_GENERIC, "Cannot convert between incompatible pixmaps");
-	}
+	if (copy_spots && ss != ds)
+		fz_throw(ctx, FZ_ERROR_GENERIC, "incompatible number of spots when converting pixmap");
+	if (!da && sa)
+		fz_throw(ctx, FZ_ERROR_GENERIC, "cannot drop alpha when converting pixmap");
 
 	if ((int)w < 0 || h < 0)
 		return;
@@ -2607,7 +1945,7 @@ static void fast_rgb_to_bgr(fz_context *ctx, fz_pixmap *dst, fz_pixmap *src, fz_
 }
 
 static void
-icc_conv_pixmap(fz_context *ctx, fz_pixmap *dst, fz_pixmap *src, fz_colorspace *prf, const fz_default_colorspaces *default_cs, const fz_color_params *color_params, int copy_spots)
+icc_conv_pixmap(fz_context *ctx, fz_pixmap *dst, fz_pixmap *src, fz_colorspace *prf, const fz_default_colorspaces *default_cs, const fz_color_params *color_params, int copy_extras)
 {
 	fz_colorspace *srcs = src->colorspace;
 	fz_colorspace *dsts = dst->colorspace;
@@ -2616,29 +1954,31 @@ icc_conv_pixmap(fz_context *ctx, fz_pixmap *dst, fz_pixmap *src, fz_colorspace *
 	unsigned char *inputpos, *outputpos;
 	int src_n;
 
-	/* Handle DeviceGray->CMYK as K only. See note in Section 6.3 of PDF spec.*/
-	if (fz_colorspace_is_device_gray(ctx, src->colorspace) && fz_colorspace_is_subtractive(ctx, dst->colorspace))
+	/* Handle DeviceGray to CMYK as K only. See note in Section 6.3 of PDF spec 1.7. */
+	if (fz_colorspace_is_device_gray(ctx, srcs) && fz_colorspace_is_cmyk(ctx, dsts))
 	{
-		fast_gray_to_cmyk(ctx, dst, src, prf, default_cs, color_params, copy_spots);
+		fast_gray_to_cmyk(ctx, dst, src, prf, default_cs, color_params, copy_extras);
 		return;
 	}
 
 	/* Check if we have to do a color space default substitution */
 	if (default_cs)
 	{
-		switch (fz_colorspace_n(ctx, src->colorspace))
+		switch (fz_colorspace_type(ctx, src->colorspace))
 		{
-		case 1:
+		case FZ_COLORSPACE_GRAY:
 			if (src->colorspace == fz_device_gray(ctx))
 				srcs = fz_default_gray(ctx, default_cs);
 			break;
-		case 3:
+		case FZ_COLORSPACE_RGB:
 			if (src->colorspace == fz_device_rgb(ctx))
 				srcs = fz_default_rgb(ctx, default_cs);
 			break;
-		case 4:
+		case FZ_COLORSPACE_CMYK:
 			if (src->colorspace == fz_device_cmyk(ctx))
 				srcs = fz_default_cmyk(ctx, default_cs);
+			break;
+		default:
 			break;
 		}
 	}
@@ -2646,7 +1986,11 @@ icc_conv_pixmap(fz_context *ctx, fz_pixmap *dst, fz_pixmap *src, fz_colorspace *
 	inputpos = src->samples;
 	outputpos = dst->samples;
 
-	link = fz_get_icc_link(ctx, dsts, dst->s + dst->alpha, srcs, src->s + src->alpha, prf, color_params, 1, copy_spots, &src_n);
+	/* If we have alpha channels, set copy_extras so that the LCMS transform also copies the alpha channels. */
+	if (src->alpha || dst->alpha)
+		copy_extras = 1;
+
+	link = fz_get_icc_link(ctx, dsts, dst->s + dst->alpha, srcs, src->s + src->alpha, prf, color_params, 1, copy_extras, &src_n);
 
 	if (link->is_identity)
 	{
@@ -2709,7 +2053,6 @@ icc_base_conv_pixmap(fz_context *ctx, fz_pixmap *dst, fz_pixmap *src, fz_colorsp
 	int i, j;
 	unsigned char *inputpos, *outputpos;
 	fz_pixmap *base;
-	fz_irect bbox;
 	int h, len;
 	float src_f[FZ_MAX_COLORS], des_f[FZ_MAX_COLORS];
 	int sn = src->n;
@@ -2718,7 +2061,7 @@ icc_base_conv_pixmap(fz_context *ctx, fz_pixmap *dst, fz_pixmap *src, fz_colorsp
 	int stride_base;
 	int bn, bc;
 
-	base = fz_new_pixmap_with_bbox(ctx, base_cs, fz_pixmap_bbox(ctx, src, &bbox), src->seps, src->alpha);
+	base = fz_new_pixmap_with_bbox(ctx, base_cs, fz_pixmap_bbox(ctx, src), src->seps, src->alpha);
 	bn = base->n;
 	bc = base->n - base->alpha - base->s;
 	stride_base = base->stride - base->w * bn;
@@ -2773,6 +2116,7 @@ std_conv_pixmap(fz_context *ctx, fz_pixmap *dst, fz_pixmap *src, fz_colorspace *
 	ptrdiff_t s_line_inc = src->stride - w * src->n;
 	int da = dst->alpha;
 	int sa = src->alpha;
+	int alpha = 255;
 
 	fz_colorspace *ss = src->colorspace;
 	fz_colorspace *ds = dst->colorspace;
@@ -2788,6 +2132,10 @@ std_conv_pixmap(fz_context *ctx, fz_pixmap *dst, fz_pixmap *src, fz_colorspace *
 
 	srcn = ss->n;
 	dstn = ds->n;
+
+	/* No spot colors allowed here! */
+	assert(src->s == 0);
+	assert(dst->s == 0);
 
 	assert(src->w == dst->w && src->h == dst->h);
 	assert(src->n == srcn + sa);
@@ -2810,17 +2158,35 @@ std_conv_pixmap(fz_context *ctx, fz_pixmap *dst, fz_pixmap *src, fz_colorspace *
 			size_t ww = w;
 			while (ww--)
 			{
-				srcv[0] = *s++ / 255.0f * 100;
-				srcv[1] = *s++ - 128;
-				srcv[2] = *s++ - 128;
+				if (sa)
+				{
+					alpha = s[4];
+					srcv[0] = fz_div255(s[0], alpha) / 255.0f * 100;
+					srcv[1] = fz_div255(s[1], alpha) - 128;
+					srcv[2] = fz_div255(s[2], alpha) - 128;
+					s += 4;
+				}
+				else
+				{
+					srcv[0] = s[0] / 255.0f * 100;
+					srcv[1] = s[1] - 128;
+					srcv[2] = s[2] - 128;
+					s += 3;
+				}
 
 				cc.convert(ctx, &cc, dstv, srcv);
 
-				for (k = 0; k < dstn; k++)
-					*d++ = dstv[k] * 255;
 				if (da)
-					*d++ = (sa ? *s : 255);
-				s += sa;
+				{
+					for (k = 0; k < dstn; k++)
+						*d++ = fz_mul255(dstv[k] * 255, alpha);
+					*d++ = alpha;
+				}
+				else
+				{
+					for (k = 0; k < dstn; k++)
+						*d++ = dstv[k] * 255;
+				}
 			}
 			d += d_line_inc;
 			s += s_line_inc;
@@ -2839,16 +2205,33 @@ std_conv_pixmap(fz_context *ctx, fz_pixmap *dst, fz_pixmap *src, fz_colorspace *
 			size_t ww = w;
 			while (ww--)
 			{
-				for (k = 0; k < srcn; k++)
-					srcv[k] = *s++ / 255.0f;
+				if (sa)
+				{
+					alpha = s[srcn];
+					for (k = 0; k < srcn; k++)
+						srcv[k] = fz_div255(s[k], alpha) / 255.0f;
+					s += srcn + 1;
+				}
+				else
+				{
+					for (k = 0; k < srcn; k++)
+						srcv[k] = s[k] / 255.0f;
+					s += srcn;
+				}
 
 				cc.convert(ctx, &cc, dstv, srcv);
 
-				for (k = 0; k < dstn; k++)
-					*d++ = dstv[k] * 255;
 				if (da)
-					*d++ = (sa ? *s : 255);
-				s += sa;
+				{
+					for (k = 0; k < dstn; k++)
+						*d++ = fz_mul255(dstv[k] * 255, alpha);
+					*d++ = alpha;
+				}
+				else
+				{
+					for (k = 0; k < dstn; k++)
+						*d++ = dstv[k] * 255;
+				}
 			}
 			d += d_line_inc;
 			s += s_line_inc;
@@ -2877,12 +2260,28 @@ std_conv_pixmap(fz_context *ctx, fz_pixmap *dst, fz_pixmap *src, fz_colorspace *
 			size_t ww = w;
 			while (ww--)
 			{
-				i = *s++;
-				for (k = 0; k < dstn; k++)
-					*d++ = lookup[i * dstn + k];
+				if (sa)
+				{
+					alpha = s[1];
+					i = fz_div255(s[0], alpha);
+					s += 2;
+				}
+				else
+				{
+					i = *s++;
+				}
+
 				if (da)
-					*d++ = (sa ? *s : 255);
-				s += sa;
+				{
+					for (k = 0; k < dstn; k++)
+						*d++ = fz_mul255(lookup[i * dstn + k], alpha);
+					*d++ = alpha;
+				}
+				else
+				{
+					for (k = 0; k < dstn; k++)
+						*d++ = lookup[i * dstn + k];
+				}
 			}
 			d += d_line_inc;
 			s += s_line_inc;
@@ -2899,7 +2298,7 @@ std_conv_pixmap(fz_context *ctx, fz_pixmap *dst, fz_pixmap *src, fz_colorspace *
 		unsigned char *dold;
 		fz_color_converter cc;
 
-		lookup = fz_new_hash_table(ctx, 509, srcn, -1, NULL);
+		lookup = fz_new_hash_table(ctx, 509, srcn+sa, -1, NULL);
 		fz_find_color_converter(ctx, &cc, NULL, ds, ss, color_params);
 
 		fz_try(ctx)
@@ -2909,15 +2308,10 @@ std_conv_pixmap(fz_context *ctx, fz_pixmap *dst, fz_pixmap *src, fz_colorspace *
 				size_t ww = w;
 				while (ww--)
 				{
-					if (*s == *sold && memcmp(sold,s,srcn) == 0)
+					if (*s == *sold && memcmp(sold,s,srcn+sa) == 0)
 					{
 						sold = s;
-						memcpy(d, dold, dstn);
-						d += dstn;
-						s += srcn;
-						if (da)
-							*d++ = (sa ? *s : 255);
-						s += sa;
+						memcpy(d, dold, dstn+da);
 					}
 					else
 					{
@@ -2926,39 +2320,54 @@ std_conv_pixmap(fz_context *ctx, fz_pixmap *dst, fz_pixmap *src, fz_colorspace *
 						color = fz_hash_find(ctx, lookup, s);
 						if (color)
 						{
-							memcpy(d, color, dstn);
-							s += srcn;
-							d += dstn;
-							if (da)
-								*d++ = (sa ? *s : 255);
-							s += sa;
+							memcpy(d, color, dstn+da);
 						}
 						else
 						{
-							for (k = 0; k < srcn; k++)
-								srcv[k] = *s++ / 255.0f;
-							cc.convert(ctx, &cc, dstv, srcv);
-							for (k = 0; k < dstn; k++)
-								*d++ = dstv[k] * 255;
+							if (sa)
+							{
+								alpha = s[srcn];
+								for (k = 0; k < srcn; k++)
+									srcv[k] = fz_div255(s[k], alpha) / 255.0f;
+							}
+							else
+							{
+								for (k = 0; k < srcn; k++)
+									srcv[k] = s[k] / 255.0f;
+							}
 
-							fz_hash_insert(ctx, lookup, s - srcn, d - dstn);
+							cc.convert(ctx, &cc, dstv, srcv);
 
 							if (da)
-								*d++ = (sa ? *s : 255);
-							s += sa;
+							{
+								for (k = 0; k < dstn; k++)
+									d[k] = fz_mul255(dstv[k] * 255, alpha);
+								d[k] = alpha;
+							}
+							else
+							{
+								for (k = 0; k < dstn; k++)
+									d[k] = dstv[k] * 255;
+							}
+
+							fz_hash_insert(ctx, lookup, s, d);
 						}
 					}
+					s += srcn + sa;
+					d += dstn + da;
 				}
 				d += d_line_inc;
 				s += s_line_inc;
 			}
 		}
 		fz_always(ctx)
+		{
 			fz_drop_color_converter(ctx, &cc);
+			fz_drop_hash_table(ctx, lookup);
+		}
 		fz_catch(ctx)
 			fz_rethrow(ctx);
 
-		fz_drop_hash_table(ctx, lookup);
 	}
 }
 
@@ -3004,10 +2413,10 @@ static void fast_any_to_alpha(fz_context *ctx, fz_pixmap *dst, fz_pixmap *src, f
 	}
 }
 
-/* Used for testing all color managed source color spaces.  If it is icc, cal or
+/* Used for testing all color managed color spaces.  If it is icc, cal or
  * has a base space that is managed */
 static const fz_colorspace *
-fz_source_colorspace_cm(fz_context *ctx, const fz_colorspace *cs)
+fz_colorspace_cm(fz_context *ctx, const fz_colorspace *cs)
 {
 	while (cs)
 	{
@@ -3063,8 +2472,8 @@ fz_pixmap_converter *fz_lookup_pixmap_converter(fz_context *ctx, fz_colorspace *
 	}
 	else
 	{
-		const fz_colorspace *ss_base = fz_source_colorspace_cm(ctx, ss);
-		if (ss_base != NULL && fz_colorspace_is_icc(ctx, ds))
+		const fz_colorspace *ss_base = fz_colorspace_cm(ctx, ss);
+		if (ss_base != NULL && fz_colorspace_cm(ctx, ds))
 		{
 			if (ss_base == ss)
 				return icc_conv_pixmap;
@@ -3241,29 +2650,17 @@ cmyk2g(fz_context *ctx, fz_color_converter *cc, float *dv, const float *sv)
 static void
 cmyk2rgb(fz_context *ctx, fz_color_converter *cc, float *dv, const float *sv)
 {
-#ifdef SLOWCMYK
-	cmyk_to_rgb(ctx, NULL, sv, dv);
-#else
 	dv[0] = 1 - fz_min(sv[0] + sv[3], 1);
 	dv[1] = 1 - fz_min(sv[1] + sv[3], 1);
 	dv[2] = 1 - fz_min(sv[2] + sv[3], 1);
-#endif
 }
 
 static void
 cmyk2bgr(fz_context *ctx, fz_color_converter *cc, float *dv, const float *sv)
 {
-#ifdef SLOWCMYK
-	float rgb[3];
-	cmyk_to_rgb(ctx, NULL, sv, rgb);
-	dv[0] = rgb[2];
-	dv[1] = rgb[1];
-	dv[2] = rgb[0];
-#else
 	dv[0] = 1 - fz_min(sv[2] + sv[3], 1);
 	dv[1] = 1 - fz_min(sv[1] + sv[3], 1);
 	dv[2] = 1 - fz_min(sv[0] + sv[3], 1);
-#endif
 }
 
 void fz_find_color_converter(fz_context *ctx, fz_color_converter *cc, const fz_colorspace *is, const fz_colorspace *ds, const fz_colorspace *ss, const fz_color_params *params)
@@ -3328,16 +2725,17 @@ void fz_find_color_converter(fz_context *ctx, fz_color_converter *cc, const fz_c
 	}
 	else
 	{
-		const fz_colorspace *ss_base = fz_source_colorspace_cm(ctx, ss);
-		if (ss_base != NULL && fz_colorspace_is_icc(ctx, ds))
+		const fz_colorspace *ss_base = fz_colorspace_cm(ctx, ss);
+		if (ss_base != NULL && fz_colorspace_cm(ctx, ds))
 		{
 			if (ss_base == ss)
 				cc->convert = icc_conv_color;
 			else
 				cc->convert = icc_base_conv_color;
 
-			/* Special case. Do not set link if we are doing DeviceGray to CMYK */
-			if (!(fz_colorspace_is_device_gray(ctx, ss_base) && fz_colorspace_is_subtractive(ctx, ds)))
+			/* Special case: Do not set link if we are doing DeviceGray to CMYK. */
+			/* Handle DeviceGray to CMYK as K only. See note in Section 6.3 of PDF spec 1.7. */
+			if (!(fz_colorspace_is_device_gray(ctx, ss_base) && fz_colorspace_is_cmyk(ctx, ds)))
 				cc->link = fz_get_icc_link(ctx, ds, 0, ss_base, 0, is, params, 2, 0, &cc->n);
 		}
 		else
@@ -3352,7 +2750,6 @@ fz_drop_color_converter(fz_context *ctx, fz_color_converter *cc)
 	if (link)
 		fz_drop_icclink(ctx, link);
 	cc->link = NULL;
-
 }
 
 void
@@ -3421,11 +2818,6 @@ clamp_indexed(const fz_colorspace *cs, const float *in, float *out)
 	*out = fz_clamp(*in, 0, idx->high) / 255.0f; /* To do, avoid 255 divide */
 }
 
-int fz_colorspace_is_indexed(fz_context *ctx, const fz_colorspace *cs)
-{
-	return cs && cs->clamp == clamp_indexed;
-}
-
 fz_colorspace *
 fz_new_indexed_colorspace(fz_context *ctx, fz_colorspace *base, int high, unsigned char *lookup)
 {
@@ -3438,7 +2830,7 @@ fz_new_indexed_colorspace(fz_context *ctx, fz_colorspace *base, int high, unsign
 	idx->high = high;
 
 	fz_try(ctx)
-		cs = fz_new_colorspace(ctx, "Indexed", 1, 0, fz_colorspace_is_icc(ctx, fz_device_rgb(ctx)) ? indexed_to_alt : indexed_to_rgb, NULL, base_indexed, clamp_indexed, free_indexed, idx, sizeof(*idx) + (base->n * (idx->high + 1)) + base->size);
+		cs = fz_new_colorspace(ctx, "Indexed", FZ_COLORSPACE_INDEXED, 0, 1, fz_colorspace_is_icc(ctx, fz_device_rgb(ctx)) ? indexed_to_alt : indexed_to_rgb, NULL, base_indexed, clamp_indexed, free_indexed, idx, sizeof(*idx) + (base->n * (idx->high + 1)) + base->size);
 	fz_catch(ctx)
 	{
 		fz_free(ctx, idx);
@@ -3466,7 +2858,6 @@ fz_expand_indexed_pixmap(fz_context *ctx, const fz_pixmap *src, int alpha)
 	unsigned char *d;
 	int y, x, k, n, high;
 	unsigned char *lookup;
-	fz_irect bbox;
 	int s_line_inc, d_line_inc;
 
 	assert(src->colorspace->to_ccs == indexed_to_rgb || src->colorspace->to_ccs == indexed_to_alt);
@@ -3477,7 +2868,7 @@ fz_expand_indexed_pixmap(fz_context *ctx, const fz_pixmap *src, int alpha)
 	lookup = idx->lookup;
 	n = idx->base->n;
 
-	dst = fz_new_pixmap_with_bbox(ctx, idx->base, fz_pixmap_bbox(ctx, src, &bbox), src->seps, alpha);
+	dst = fz_new_pixmap_with_bbox(ctx, idx->base, fz_pixmap_bbox(ctx, src), src->seps, alpha);
 	s = src->samples;
 	d = dst->samples;
 	s_line_inc = src->stride - src->w * src->n;
@@ -3578,6 +2969,7 @@ void fz_init_cached_color_converter(fz_context *ctx, fz_color_converter *cc, fz_
 		fz_drop_color_converter(ctx, &cached->base);
 		fz_drop_hash_table(ctx, cached->hash);
 		fz_free(ctx, cached);
+		cc->opaque = NULL;
 		fz_rethrow(ctx);
 	}
 }
@@ -3611,6 +3003,7 @@ const char *fz_colorspace_name(fz_context *ctx, const fz_colorspace *cs)
 	return cs ? cs->name : "";
 }
 
+#if FZ_ENABLE_ICC
 static void
 free_icc(fz_context *ctx, fz_colorspace *cs)
 {
@@ -3640,38 +3033,28 @@ clamp_default_icc(const fz_colorspace *cs, const float *src, float *dst)
 		dst[i] = fz_clamp(src[i], 0, 1);
 }
 
-int fz_colorspace_is_icc(fz_context *ctx, const fz_colorspace *cs)
+static const char *colorspace_name_from_type(int type)
 {
-	return cs && cs->free_data == free_icc;
+	switch (type) {
+	default: return "Unknown";
+	case FZ_COLORSPACE_GRAY: return "Gray";
+	case FZ_COLORSPACE_RGB: return "RGB";
+	case FZ_COLORSPACE_BGR: return "BGR";
+	case FZ_COLORSPACE_CMYK: return "CMYK";
+	case FZ_COLORSPACE_LAB: return "Lab";
+	}
 }
-
-int fz_colorspace_is_lab_icc(fz_context *ctx, const fz_colorspace *cs)
-{
-	return cs && cs->clamp == clamp_lab_icc;
-}
-
-void fz_set_icc_bgr(fz_context *ctx, fz_colorspace *cs)
-{
-	fz_iccprofile *profile;
-
-	if (cs == NULL || !fz_colorspace_is_icc(ctx, cs))
-		return;
-
-	profile = cs->data;
-	profile->bgr = 1;
-	return;
-}
+#endif
 
 fz_colorspace *
-fz_new_icc_colorspace(fz_context *ctx, const char *name, int num, fz_buffer *buf)
+fz_new_icc_colorspace(fz_context *ctx, enum fz_colorspace_type type, fz_buffer *buf)
 {
-#ifdef NO_ICC
-	fz_throw(ctx, FZ_ERROR_GENERIC, "ICC Profiles not supported in NO_ICC build");
-#else
+#if FZ_ENABLE_ICC
 	fz_colorspace *cs = NULL;
 	fz_iccprofile *profile;
-	int is_lab = 0;
-	int flags = 0;
+	int flags = FZ_COLORSPACE_IS_ICC;
+	const char *name;
+	int num;
 
 	profile = fz_malloc_struct(ctx, fz_iccprofile);
 	fz_try(ctx)
@@ -3680,12 +3063,9 @@ fz_new_icc_colorspace(fz_context *ctx, const char *name, int num, fz_buffer *buf
 		{
 			size_t size;
 			const unsigned char *data;
-			data = fz_lookup_icc(ctx, name, &size);
+			data = fz_lookup_icc(ctx, type, &size);
 			profile->buffer = fz_new_buffer_from_shared_data(ctx, data, size);
-			is_lab = (strcmp(name, FZ_ICC_PROFILE_LAB) == 0);
-			if (strcmp(name, FZ_ICC_PROFILE_GRAY) == 0)
-				flags = FZ_CS_DEVICE_GRAY;
-			profile->bgr = (strcmp(name, FZ_ICC_PROFILE_BGR) == 0);
+			flags |= FZ_COLORSPACE_IS_DEVICE;
 		}
 		else
 		{
@@ -3694,26 +3074,76 @@ fz_new_icc_colorspace(fz_context *ctx, const char *name, int num, fz_buffer *buf
 
 		fz_cmm_init_profile(ctx, profile);
 
-		/* Check if correct type, if a particular type was expected */
-		if (num != 0 && num != profile->num_devcomp)
+		if (type == FZ_COLORSPACE_NONE)
 		{
-			fz_drop_buffer(ctx, profile->buffer);
-			fz_cmm_fin_profile(ctx, profile);
-			fz_free(ctx, profile);
-			break;
+			switch (profile->num_devcomp)
+			{
+			default: type = FZ_COLORSPACE_SEPARATION; break;
+			case 1: type = FZ_COLORSPACE_GRAY; break;
+			case 3: type = FZ_COLORSPACE_RGB; break;
+			case 4: type = FZ_COLORSPACE_CMYK; break;
+			}
 		}
 
-		fz_md5_icc(ctx, profile);
-		if (profile->num_devcomp == 4)
-			flags |= FZ_CS_SUBTRACTIVE;
-		cs = fz_new_colorspace(ctx, name, profile->num_devcomp, flags, NULL, NULL, NULL, is_lab ? clamp_lab_icc : clamp_default_icc, free_icc, profile, sizeof(profile));
+		profile->bgr = (type == FZ_COLORSPACE_BGR);
 
-		if (profile->num_devcomp == 4)
+		switch (type)
 		{
+		default: num = profile->num_devcomp; break;
+		case FZ_COLORSPACE_GRAY: num = 1; break;
+		case FZ_COLORSPACE_RGB: num = 3; break;
+		case FZ_COLORSPACE_BGR: num = 3; break;
+		case FZ_COLORSPACE_LAB: num = 3; break;
+		case FZ_COLORSPACE_CMYK: num = 4; break;
+		}
+
+		/* Check if correct type, if a particular type was expected */
+		if (num != profile->num_devcomp)
+			fz_throw(ctx, FZ_ERROR_GENERIC, "ICC profile did not match expected colorspace type");
+
+		fz_md5_icc(ctx, profile);
+
+		if (profile->desc)
+			name = profile->desc;
+		else
+			name = colorspace_name_from_type(type);
+
+		cs = fz_new_colorspace(ctx, name, type, flags, profile->num_devcomp,
+			NULL,
+			NULL,
+			NULL,
+			(type == FZ_COLORSPACE_LAB) ? clamp_lab_icc : clamp_default_icc,
+			free_icc,
+			profile, sizeof(*profile));
+
+		switch (type)
+		{
+		default:
+			break;
+		case FZ_COLORSPACE_GRAY:
+			fz_colorspace_name_colorant(ctx, cs, 0, "Gray");
+			break;
+		case FZ_COLORSPACE_LAB:
+			fz_colorspace_name_colorant(ctx, cs, 0, "L*");
+			fz_colorspace_name_colorant(ctx, cs, 1, "a*");
+			fz_colorspace_name_colorant(ctx, cs, 2, "b*");
+			break;
+		case FZ_COLORSPACE_RGB:
+			fz_colorspace_name_colorant(ctx, cs, 0, "Red");
+			fz_colorspace_name_colorant(ctx, cs, 1, "Green");
+			fz_colorspace_name_colorant(ctx, cs, 2, "Blue");
+			break;
+		case FZ_COLORSPACE_BGR:
+			fz_colorspace_name_colorant(ctx, cs, 2, "Red");
+			fz_colorspace_name_colorant(ctx, cs, 1, "Green");
+			fz_colorspace_name_colorant(ctx, cs, 0, "Blue");
+			break;
+		case FZ_COLORSPACE_CMYK:
 			fz_colorspace_name_colorant(ctx, cs, 0, "Cyan");
 			fz_colorspace_name_colorant(ctx, cs, 1, "Magenta");
 			fz_colorspace_name_colorant(ctx, cs, 2, "Yellow");
 			fz_colorspace_name_colorant(ctx, cs, 3, "Black");
+			break;
 		}
 	}
 	fz_catch(ctx)
@@ -3721,17 +3151,20 @@ fz_new_icc_colorspace(fz_context *ctx, const char *name, int num, fz_buffer *buf
 		fz_drop_buffer(ctx, profile->buffer);
 		fz_cmm_fin_profile(ctx, profile);
 		fz_free(ctx, profile);
+		fz_rethrow(ctx);
 	}
 	return cs;
+#else
+	fz_throw(ctx, FZ_ERROR_GENERIC, "ICC Profiles not supported in FZ_ENABLE_ICC=0 build");
 #endif
 }
 
-fz_colorspace *fz_new_icc_colorspace_from_file(fz_context *ctx, const char *name, const char *path)
+fz_colorspace *fz_new_icc_colorspace_from_file(fz_context *ctx, enum fz_colorspace_type type, const char *path)
 {
 	fz_colorspace *cs = NULL;
 	fz_buffer *buffer = fz_read_file(ctx, path);
 	fz_try(ctx)
-		cs = fz_new_icc_colorspace(ctx, name, 0, buffer);
+		cs = fz_new_icc_colorspace(ctx, type, buffer);
 	fz_always(ctx)
 		fz_drop_buffer(ctx, buffer);
 	fz_catch(ctx)
@@ -3739,12 +3172,12 @@ fz_colorspace *fz_new_icc_colorspace_from_file(fz_context *ctx, const char *name
 	return cs;
 }
 
-fz_colorspace *fz_new_icc_colorspace_from_stream(fz_context *ctx, const char *name, fz_stream *in)
+fz_colorspace *fz_new_icc_colorspace_from_stream(fz_context *ctx, enum fz_colorspace_type type, fz_stream *in)
 {
 	fz_colorspace *cs = NULL;
 	fz_buffer *buffer = fz_read_all(ctx, in, 1024);
 	fz_try(ctx)
-		cs = fz_new_icc_colorspace(ctx, name, 0, buffer);
+		cs = fz_new_icc_colorspace(ctx, type, buffer);
 	fz_always(ctx)
 		fz_drop_buffer(ctx, buffer);
 	fz_catch(ctx)
@@ -3781,19 +3214,27 @@ free_cal(fz_context *ctx, fz_colorspace *cs)
 	fz_free(ctx, cal_data);
 }
 
-int fz_colorspace_is_cal(fz_context *ctx, const fz_colorspace *cs)
-{
-	return cs && cs->free_data == free_cal;
-}
-
 /* Profile created if needed during draw command. */
 fz_colorspace *
 fz_new_cal_colorspace(fz_context *ctx, const char *name, float *wp, float *bp, float *gamma, float *matrix)
 {
 	fz_colorspace *cs = NULL;
-	int num = (matrix == NULL ? 1 : 3);
-	fz_cal_colorspace *cal_data = fz_malloc_struct(ctx, fz_cal_colorspace);
+	enum fz_colorspace_type type;
+	int num;
+	fz_cal_colorspace *cal_data;
 
+	if (matrix)
+	{
+		type = FZ_COLORSPACE_RGB;
+		num = 3;
+	}
+	else
+	{
+		type = FZ_COLORSPACE_GRAY;
+		num = 1;
+	}
+
+	cal_data = fz_malloc_struct(ctx, fz_cal_colorspace);
 	memcpy(&cal_data->bp, bp, sizeof(float) * 3);
 	memcpy(&cal_data->wp, wp, sizeof(float) * 3);
 	memcpy(&cal_data->gamma, gamma, sizeof(float) * num);
@@ -3802,7 +3243,7 @@ fz_new_cal_colorspace(fz_context *ctx, const char *name, float *wp, float *bp, f
 	cal_data->n = num;
 
 	fz_try(ctx)
-		cs = fz_new_colorspace(ctx, "pdf-cal", num, 0, NULL, NULL, NULL, NULL, free_cal, cal_data, sizeof(cal_data));
+		cs = fz_new_colorspace(ctx, name, type, FZ_COLORSPACE_IS_CAL, num, NULL, NULL, NULL, NULL, free_cal, cal_data, sizeof(cal_data));
 	fz_catch(ctx)
 	{
 		fz_free(ctx, cal_data);
@@ -3936,10 +3377,13 @@ fz_clone_default_colorspaces(fz_context *ctx, fz_default_colorspaces *base)
 {
 	fz_default_colorspaces *default_cs = fz_malloc_struct(ctx, fz_default_colorspaces);
 	default_cs->refs = 1;
-	default_cs->gray = fz_keep_colorspace(ctx, base->gray);
-	default_cs->rgb = fz_keep_colorspace(ctx, base->rgb);
-	default_cs->cmyk = fz_keep_colorspace(ctx, base->cmyk);
-	default_cs->oi = fz_keep_colorspace(ctx, base->oi);
+	if (base)
+	{
+		default_cs->gray = fz_keep_colorspace(ctx, base->gray);
+		default_cs->rgb = fz_keep_colorspace(ctx, base->rgb);
+		default_cs->cmyk = fz_keep_colorspace(ctx, base->cmyk);
+		default_cs->oi = fz_keep_colorspace(ctx, base->oi);
+	}
 	return default_cs;
 }
 
@@ -3976,7 +3420,7 @@ void fz_colorspace_name_colorant(fz_context *ctx, fz_colorspace *cs, int i, cons
 	{
 		cs->colorant[i] = fz_strdup(ctx, name);
 
-		if (cs->flags & FZ_CS_DEVICE_N)
+		if (cs->type == FZ_COLORSPACE_SEPARATION)
 		{
 			if (i == 0)
 			{
@@ -4011,24 +3455,4 @@ const char *fz_colorspace_colorant(fz_context *ctx, const fz_colorspace *cs, int
 		fz_throw(ctx, FZ_ERROR_GENERIC, "Colorant out of range");
 
 	return cs->colorant[i];
-}
-
-int fz_colorspace_is_device_n(fz_context *ctx, const fz_colorspace *cs)
-{
-	return (cs && !!(cs->flags & FZ_CS_DEVICE_N));
-}
-
-int fz_colorspace_device_n_has_only_cmyk(fz_context *ctx, const fz_colorspace *cs)
-{
-	return (cs == NULL ? 0 : ((cs->flags & FZ_CS_HAS_CMYK_AND_SPOTS) == FZ_CS_HAS_CMYK));
-}
-
-int fz_colorspace_device_n_has_cmyk(fz_context *ctx, const fz_colorspace *cs)
-{
-	return (cs == NULL ? 0 : !!(cs->flags & FZ_CS_HAS_CMYK));
-}
-
-int fz_colorspace_is_device_gray(fz_context *ctx, const fz_colorspace *cs)
-{
-	return (cs == NULL ? 0 : !!(cs->flags & FZ_CS_DEVICE_GRAY));
 }

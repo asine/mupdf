@@ -6,7 +6,7 @@
 	Enable the following for spot (and hence overprint/overprint
 	simulation) capable rendering. This forces FZ_PLOTTERS_N on.
 */
-#define FZ_ENABLE_SPOT_RENDERING
+/* #define FZ_ENABLE_SPOT_RENDERING 1 */
 
 /*
 	Choose which plotters we need.
@@ -29,10 +29,14 @@
 /* #define FZ_ENABLE_SVG 1 */
 /* #define FZ_ENABLE_CBZ 1 */
 /* #define FZ_ENABLE_IMG 1 */
-/* #define FZ_ENABLE_TIFF 1 */
 /* #define FZ_ENABLE_HTML 1 */
 /* #define FZ_ENABLE_EPUB 1 */
 /* #define FZ_ENABLE_GPRF 1 */
+
+/*
+	Choose whether to enable ICC color profiles.
+*/
+/* #define FZ_ENABLE_ICC 1 */
 
 /*
 	Choose whether to enable JPEG2000 decoding.
@@ -80,9 +84,6 @@
 /* To skip the SIL fonts, enable: */
 /* #define TOFU_SIL */
 
-/* To skip the ICC profiles, enable: */
-/* #define NO_ICC */
-
 /* To skip the Base14 fonts, enable: */
 /* #define TOFU_BASE14 */
 /* (You probably really don't want to do that except for measurement purposes!) */
@@ -90,6 +91,10 @@
 /* ---------- DO NOT EDIT ANYTHING UNDER THIS LINE ---------- */
 
 #ifndef FZ_ENABLE_SPOT_RENDERING
+#define FZ_ENABLE_SPOT_RENDERING 1
+#endif
+
+#if FZ_ENABLE_SPOT_RENDERING
 #undef FZ_PLOTTERS_N
 #define FZ_PLOTTERS_N 1
 #endif /* FZ_ENABLE_SPOT_RENDERING */
@@ -136,10 +141,6 @@
 #define FZ_ENABLE_IMG 1
 #endif /* FZ_ENABLE_IMG */
 
-#ifndef FZ_ENABLE_TIFF
-#define FZ_ENABLE_TIFF 1
-#endif /* FZ_ENABLE_TIFF */
-
 #ifndef FZ_ENABLE_HTML
 #define FZ_ENABLE_HTML 1
 #endif /* FZ_ENABLE_HTML */
@@ -159,6 +160,10 @@
 #ifndef FZ_ENABLE_JS
 #define FZ_ENABLE_JS 1
 #endif /* FZ_ENABLE_JS */
+
+#ifndef FZ_ENABLE_ICC
+#define FZ_ENABLE_ICC 1
+#endif /* FZ_ENABLE_ICC */
 
 /* If Epub and HTML are both disabled, disable SIL fonts */
 #if FZ_ENABLE_HTML == 0 && FZ_ENABLE_EPUB == 0

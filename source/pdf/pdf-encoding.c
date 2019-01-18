@@ -7,6 +7,8 @@
 #include <string.h>
 #include <stdlib.h>
 
+#define pdf_win_ansi fz_glyph_name_from_windows_1252
+
 void
 pdf_load_encoding(const char **estrings, const char *encoding)
 {

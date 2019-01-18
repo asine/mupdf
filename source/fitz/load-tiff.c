@@ -309,12 +309,12 @@ tiff_decode_data(fz_context *ctx, struct tiff *tiff, const unsigned char *rp, un
 		rp = reversed;
 	}
 
+	fz_var(jpegtables);
 	fz_var(encstm);
 	fz_var(stm);
 
 	fz_try(ctx)
 	{
-		/* each decoder will close this */
 		encstm = fz_open_memory(ctx, rp, rlen);
 
 		/* switch on compression to create a filter */
@@ -331,7 +331,7 @@ tiff_decode_data(fz_context *ctx, struct tiff *tiff, const unsigned char *rp, un
 		{
 		case 1:
 			/* stm already open and reading uncompressed data */
-			stm = encstm;
+			stm = fz_keep_stream(ctx, encstm);
 			break;
 		case 2:
 		case 3:
@@ -385,7 +385,6 @@ tiff_decode_data(fz_context *ctx, struct tiff *tiff, const unsigned char *rp, un
 			stm = fz_open_thunder(ctx, encstm, tiff->imagewidth);
 			break;
 		default:
-			stm = encstm;
 			fz_throw(ctx, FZ_ERROR_GENERIC, "unknown TIFF compression: %d", tiff->compression);
 		}
 
@@ -393,6 +392,8 @@ tiff_decode_data(fz_context *ctx, struct tiff *tiff, const unsigned char *rp, un
 	}
 	fz_always(ctx)
 	{
+		fz_drop_stream(ctx, jpegtables);
+		fz_drop_stream(ctx, encstm);
 		fz_drop_stream(ctx, stm);
 		fz_free(ctx, reversed);
 	}
@@ -1104,6 +1105,35 @@ tiff_ycc_to_rgb(fz_context *ctx, struct tiff *tiff)
 	}
 }
 
+static int
+tiff_components_from_photometric(int photometric)
+{
+	switch (photometric)
+	{
+	case 0: /* WhiteIsZero */
+		return 1;
+	case 1: /* BlackIsZero */
+		return 1;
+	case 2: /* RGB */
+		return 3;
+	case 3: /* RGBPal */
+		return 3;
+	case 5: /* CMYK */
+		return 4;
+	case 6: /* YCbCr */
+		return 3;
+	case 8: /* Direct L*a*b* encoding. a*, b* signed values */
+	case 9: /* ICC Style L*a*b* encoding */
+		return 3;
+	case 32844: /* SGI CIE Log 2 L (16bpp Greyscale) */
+		return 1;
+	case 32845: /* SGI CIE Log 2 L, u, v (24bpp or 32bpp) */
+		return 3;
+	default:
+		return 0;
+	}
+}
+
 static void
 tiff_decode_ifd(fz_context *ctx, struct tiff *tiff)
 {
@@ -1133,6 +1163,7 @@ tiff_decode_ifd(fz_context *ctx, struct tiff *tiff)
 	tiff->stride = (tiff->imagewidth * tiff->samplesperpixel * tiff->bitspersample + 7) / 8;
 	tiff->tilestride = (tiff->tilewidth * tiff->samplesperpixel * tiff->bitspersample + 7) / 8;
 
+#if FZ_ENABLE_ICC
 	if (tiff->profile)
 	{
 		fz_buffer *buff = NULL;
@@ -1140,7 +1171,9 @@ tiff_decode_ifd(fz_context *ctx, struct tiff *tiff)
 		fz_try(ctx)
 		{
 			buff = fz_new_buffer_from_copied_data(ctx, tiff->profile, tiff->profilesize);
-			tiff->colorspace = fz_new_icc_colorspace(ctx, NULL, 0, buff);
+			tiff->colorspace = fz_new_icc_colorspace(ctx, FZ_COLORSPACE_NONE, buff);
+			if (fz_colorspace_n(ctx, tiff->colorspace) != tiff_components_from_photometric(tiff->photometric))
+				fz_throw(ctx, FZ_ERROR_GENERIC, "embedded ICC profile colorspace mismatch");
 		}
 		fz_always(ctx)
 			fz_drop_buffer(ctx, buff);
@@ -1151,6 +1184,7 @@ tiff_decode_ifd(fz_context *ctx, struct tiff *tiff)
 			tiff->colorspace = NULL;
 		}
 	}
+#endif
 
 	if (tiff->colorspace == NULL)
 	{
@@ -1374,6 +1408,7 @@ fz_load_tiff_subimage(fz_context *ctx, const unsigned char *buf, size_t len, int
 	fz_always(ctx)
 	{
 		/* Clean up scratch memory */
+		fz_drop_colorspace(ctx, tiff.colorspace);
 		fz_free(ctx, tiff.colormap);
 		fz_free(ctx, tiff.stripoffsets);
 		fz_free(ctx, tiff.stripbytecounts);
@@ -1420,14 +1455,18 @@ fz_load_tiff_info_subimage(fz_context *ctx, const unsigned char *buf, size_t len
 			fz_drop_colorspace(ctx, tiff.colorspace);
 			tiff.colorspace = fz_keep_colorspace(ctx, fz_device_rgb(ctx));
 		}
-		*cspacep = tiff.colorspace;
+		*cspacep = fz_keep_colorspace(ctx, tiff.colorspace);
 	}
 	fz_always(ctx)
 	{
 		/* Clean up scratch memory */
+		fz_drop_colorspace(ctx, tiff.colorspace);
 		fz_free(ctx, tiff.colormap);
 		fz_free(ctx, tiff.stripoffsets);
 		fz_free(ctx, tiff.stripbytecounts);
+		fz_free(ctx, tiff.tileoffsets);
+		fz_free(ctx, tiff.tilebytecounts);
+		fz_free(ctx, tiff.data);
 		fz_free(ctx, tiff.samples);
 		fz_free(ctx, tiff.profile);
 	}
